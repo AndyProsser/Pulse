@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -5575,11 +5576,57 @@ func exclusionKey(a, b string) string {
 	return a + "|" + b
 }
 
+// resourceSortKey is the precomputed ordering key for one resource. Building it
+// once per element turns canonicalResourceNameKey's allocations into O(n) work
+// instead of the O(n log n) the comparator would otherwise incur.
+type resourceSortKey struct {
+	nameKey string
+	typ     string
+	id      string
+}
+
+func newResourceSortKey(name string, typ ResourceType, id string) resourceSortKey {
+	return resourceSortKey{nameKey: canonicalResourceNameKey(name), typ: string(typ), id: id}
+}
+
+func (k resourceSortKey) compare(other resourceSortKey) int {
+	if c := strings.Compare(k.nameKey, other.nameKey); c != 0 {
+		return c
+	}
+	if c := strings.Compare(k.typ, other.typ); c != 0 {
+		return c
+	}
+	return strings.Compare(k.id, other.id)
+}
+
 // Stable ordering helper for deterministic output.
+//
+// The comparator previously called canonicalResourceNameKey (strings.ToLower +
+// strings.TrimSpace, each of which can allocate) on both sides of every
+// comparison, so each element's key was rebuilt O(log n) times per sort. Sorting
+// a small key+index slice and permuting once keeps the ordering identical while
+// computing each key exactly once.
 func sortResourcesByName(resources []Resource) {
-	sort.SliceStable(resources, func(i, j int) bool {
-		return CompareResourcesByCanonicalName(resources[i], resources[j]) < 0
+	n := len(resources)
+	if n < 2 {
+		return
+	}
+	type entry struct {
+		key resourceSortKey
+		idx int
+	}
+	entries := make([]entry, n)
+	for i := range resources {
+		entries[i] = entry{key: newResourceSortKey(resources[i].Name, resources[i].Type, resources[i].ID), idx: i}
+	}
+	slices.SortStableFunc(entries, func(a, b entry) int {
+		return a.key.compare(b.key)
 	})
+	sorted := make([]Resource, n)
+	for i, e := range entries {
+		sorted[i] = resources[e.idx]
+	}
+	copy(resources, sorted)
 }
 
 type namedResourceView interface {
@@ -5588,9 +5635,26 @@ type namedResourceView interface {
 }
 
 func sortNamedResourceViewsByName[T namedResourceView](views []T) {
-	sort.SliceStable(views, func(i, j int) bool {
-		return compareResourceNameIdentity(views[i].Name(), "", views[i].ID(), views[j].Name(), "", views[j].ID()) < 0
+	n := len(views)
+	if n < 2 {
+		return
+	}
+	type entry struct {
+		key resourceSortKey
+		idx int
+	}
+	entries := make([]entry, n)
+	for i := range views {
+		entries[i] = entry{key: newResourceSortKey(views[i].Name(), "", views[i].ID()), idx: i}
+	}
+	slices.SortStableFunc(entries, func(a, b entry) int {
+		return a.key.compare(b.key)
 	})
+	sorted := make([]T, n)
+	for i, e := range entries {
+		sorted[i] = views[e.idx]
+	}
+	copy(views, sorted)
 }
 
 // ---------------------------------------------------------------------------
