@@ -565,6 +565,7 @@ func TestSyncUnifiedAppContainerMetricsRecordsTrueNASHistory(t *testing.T) {
 	}
 
 	monitor.syncUnifiedAppContainerMetrics(resourceStore)
+	store.Flush()
 
 	var appResourceID string
 	for _, resource := range resourceStore.GetAll() {
@@ -648,6 +649,7 @@ func TestSyncUnifiedStorageMetricsUsesPBSObservationTimeAcrossRegistryRebuilds(t
 	// repeatedly without a new PBS poll. They must not invent fresh samples.
 	monitor.syncUnifiedStorageMetrics(resourceStore)
 	monitor.syncUnifiedStorageMetrics(resourceStore)
+	persistentStore.Flush()
 
 	inMemory := monitor.GetStorageMetrics(targetID, time.Hour)["usage"]
 	if len(inMemory) != 1 {
@@ -718,6 +720,7 @@ func TestSyncUnifiedAppContainerMetricsUsesSourceObservationTimeAcrossRegistryRe
 	// source observation (the write amplification in #1966).
 	monitor.syncUnifiedAppContainerMetrics(resourceStore)
 	monitor.syncUnifiedAppContainerMetrics(resourceStore)
+	persistentStore.Flush()
 
 	inMemory := monitor.GetGuestMetrics("docker:"+targetID, time.Hour)["cpu"]
 	if len(inMemory) != 1 {
@@ -804,6 +807,7 @@ func TestSyncUnifiedVMMetricsUsesSourceObservationTimeAcrossRegistryRebuilds(t *
 
 	monitor.syncUnifiedVMMetrics(resourceStore)
 	monitor.syncUnifiedVMMetrics(resourceStore)
+	persistentStore.Flush()
 
 	inMemory := monitor.GetGuestMetrics(targetID, time.Hour)["cpu"]
 	if len(inMemory) != 1 {
@@ -894,6 +898,7 @@ func TestSyncUnifiedAgentMetricsRecordsTrueNASHostHistory(t *testing.T) {
 	}
 
 	monitor.syncUnifiedAgentMetrics(resourceStore)
+	store.Flush()
 
 	var systemResourceID string
 	for _, resource := range resourceStore.GetAll() {
@@ -1012,6 +1017,7 @@ func TestSyncUnifiedAgentMetricsRecordsVMwareHostHistory(t *testing.T) {
 	}
 
 	monitor.syncUnifiedAgentMetrics(resourceStore)
+	store.Flush()
 
 	var systemResourceID string
 	for _, resource := range resourceStore.GetAll() {
@@ -1092,6 +1098,7 @@ func TestSyncUnifiedVMMetricsRecordsVMwareVMHistory(t *testing.T) {
 	}
 
 	monitor.syncUnifiedVMMetrics(resourceStore)
+	store.Flush()
 
 	var vmResourceID string
 	for _, resource := range resourceStore.GetAll() {

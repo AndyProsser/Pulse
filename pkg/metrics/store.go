@@ -989,6 +989,58 @@ func (s *Store) WriteBatchSync(metrics []WriteMetric) {
 	s.enqueueAndWait(writeRequest{metrics: batch})
 }
 
+// WriteBatchBuffered appends a caller-prepared batch to the in-memory sample
+// buffer (the same one Write/WriteWithTier feed) instead of committing it
+// immediately, flushing only when the buffer reaches config.WriteBufferSize
+// or the FlushInterval ticker fires. This is the bulk counterpart to
+// WriteWithTier's per-metric buffering, for callers that already assemble a
+// []WriteMetric batch per call (e.g. monitor.go's unified metric sync)
+// rather than writing one metric at a time.
+//
+// Unlike WriteBatchBounded, this never waits on the ingestion worker or the
+// disk at all — appending to the buffer is a single mutex-guarded slice
+// append, and the eventual flush goes through the same non-blocking
+// enqueueWrite() the FlushInterval ticker already uses. That makes it
+// strictly better than WriteBatchBounded for #1437's "a slow metrics disk
+// must never stall polling" goal, not just neutral toward it.
+//
+// #1966: on an install with N independently-timed agents/providers, ingest
+// boundaries each call the unified metric sync, so N reports/sec was
+// producing up to N SQLite commits/sec — commits landing far enough apart in
+// time that #1966's coalesceQueuedRequests linger-window fix rarely had
+// anything to coalesce. Routing these calls through the buffer instead caps
+// commit frequency at 1/FlushInterval (or 1 per WriteBufferSize-metric
+// burst) regardless of how many independent callers fed it, at the cost of
+// up to FlushInterval of added staleness before a freshly-ingested metric is
+// visible to Query() — monitor.go never reads metrics back through the
+// store itself (alerting evaluates the live state snapshot, not
+// metrics.db), so nothing in the live pipeline depends on read-your-writes
+// here.
+func (s *Store) WriteBatchBuffered(metrics []WriteMetric) {
+	batch := s.prepareWriteBatch(metrics)
+	if len(batch) == 0 {
+		return
+	}
+
+	if s.stopping.Load() {
+		return
+	}
+
+	s.bufferMu.Lock()
+	if s.stopping.Load() {
+		s.bufferMu.Unlock()
+		return
+	}
+	s.buffer = append(s.buffer, batch...)
+	var toWrite []bufferedMetric
+	if len(s.buffer) >= s.config.WriteBufferSize {
+		toWrite = s.detachBufferLocked()
+	}
+	s.bufferMu.Unlock()
+
+	s.enqueueWrite(writeRequest{metrics: toWrite})
+}
+
 // WriteBatchBounded is the monitoring-pipeline variant of WriteBatchSync: it
 // hands the batch to the ingestion worker but never blocks the caller past
 // syncWriteWaitTimeout. Within the budget it behaves like WriteBatchSync; past

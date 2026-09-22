@@ -6058,6 +6058,7 @@ func TestSyncUnifiedAgentMetricsUsesSourceObservationTimeAcrossRegistryRebuilds(
 	// source observation (the write amplification in #1966).
 	monitor.syncUnifiedAgentMetrics(resourceStore)
 	monitor.syncUnifiedAgentMetrics(resourceStore)
+	persistentStore.Flush()
 
 	inMemory := monitor.GetGuestMetrics("agent:"+targetID, time.Hour)["cpu"]
 	if len(inMemory) != 1 {

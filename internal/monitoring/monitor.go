@@ -5300,7 +5300,13 @@ func (m *Monitor) syncAllUnifiedMetrics(store ResourceStoreInterface) {
 	m.syncUnifiedAppContainerMetrics(store, sink)
 	m.syncUnifiedPhysicalDiskMetrics(store)
 	if len(batch) > 0 {
-		m.metricsStore.WriteBatchBounded(batch)
+		// #1966: independently-timed agent reports each reach this point on
+		// their own schedule, so N reports/sec was still producing up to N
+		// SQLite commits/sec even after collapsing the 5 syncs into one
+		// batch above. Routing the combined batch through the store's
+		// existing flush-interval buffer instead caps commit frequency at
+		// 1/FlushInterval regardless of how many independent reports fed it.
+		m.metricsStore.WriteBatchBuffered(batch)
 	}
 }
 
@@ -5414,7 +5420,9 @@ func (m *Monitor) syncUnifiedAgentMetrics(store ResourceStoreInterface, sinks ..
 	if len(sinks) > 0 && sinks[0] != nil {
 		*sinks[0] = append(*sinks[0], storeWrites...)
 	} else if len(storeWrites) > 0 {
-		m.metricsStore.WriteBatchBounded(storeWrites)
+		// #1966: route the standalone-caller path through the flush-interval
+		// buffer too, for the same reason as the batched sink above.
+		m.metricsStore.WriteBatchBuffered(storeWrites)
 	}
 }
 
@@ -5536,7 +5544,9 @@ func (m *Monitor) syncUnifiedVMMetrics(store ResourceStoreInterface, sinks ...*[
 	if len(sinks) > 0 && sinks[0] != nil {
 		*sinks[0] = append(*sinks[0], storeWrites...)
 	} else if len(storeWrites) > 0 {
-		m.metricsStore.WriteBatchBounded(storeWrites)
+		// #1966: route the standalone-caller path through the flush-interval
+		// buffer too, for the same reason as the batched sink above.
+		m.metricsStore.WriteBatchBuffered(storeWrites)
 	}
 }
 
@@ -5638,7 +5648,9 @@ func (m *Monitor) syncUnifiedStorageMetrics(store ResourceStoreInterface, sinks 
 	if len(sinks) > 0 && sinks[0] != nil {
 		*sinks[0] = append(*sinks[0], storeWrites...)
 	} else if len(storeWrites) > 0 {
-		m.metricsStore.WriteBatchBounded(storeWrites)
+		// #1966: route the standalone-caller path through the flush-interval
+		// buffer too, for the same reason as the batched sink above.
+		m.metricsStore.WriteBatchBuffered(storeWrites)
 	}
 }
 
@@ -5874,7 +5886,9 @@ func (m *Monitor) syncUnifiedAppContainerMetrics(store ResourceStoreInterface, s
 	if len(sinks) > 0 && sinks[0] != nil {
 		*sinks[0] = append(*sinks[0], storeWrites...)
 	} else if len(storeWrites) > 0 {
-		m.metricsStore.WriteBatchBounded(storeWrites)
+		// #1966: route the standalone-caller path through the flush-interval
+		// buffer too, for the same reason as the batched sink above.
+		m.metricsStore.WriteBatchBuffered(storeWrites)
 	}
 }
 
