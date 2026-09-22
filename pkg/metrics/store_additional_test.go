@@ -1852,3 +1852,29 @@ func TestEstimateQueryAllBatchSeriesCapacityCapsPreallocation(t *testing.T) {
 		t.Fatalf("10 minutes at 5s step: capacity = %d, want 122", got)
 	}
 }
+
+// TestStoreConfiguresGenerousPageCache guards against #1966's undersized
+// default SQLite page cache regressing silently. Every other Pulse SQLite
+// store (audit, unified_resources, notifications) sets a 64MB cache_size;
+// this store — by far the highest write-volume one, 4 B-trees touched per
+// row — was left at SQLite's ~2MB default, which the write-amplification
+// profile (PULSE_METRICS_WRITE_PROFILE=consolidated
+// PULSE_METRICS_WRITE_PROFILE_AUTOCHECKPOINT=1) measured as 125,905
+// mid-transaction cache spills for 393,630 rows; matching the other stores'
+// convention eliminates all of them.
+func TestStoreConfiguresGenerousPageCache(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(DefaultConfig(dir))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	var cacheSize int64
+	if err := store.db.QueryRow("PRAGMA cache_size").Scan(&cacheSize); err != nil {
+		t.Fatalf("PRAGMA cache_size: %v", err)
+	}
+	if cacheSize != -64000 {
+		t.Fatalf("cache_size = %d, want -64000 KiB (matching every other Pulse SQLite store; see #1966)", cacheSize)
+	}
+}

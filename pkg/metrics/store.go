@@ -364,6 +364,13 @@ func NewStore(config StoreConfig) (*Store, error) {
 			// Checkpoint less aggressively so high-cardinality installs don't
 			// keep rewriting tiny WAL segments back into the main DB file.
 			"wal_autocheckpoint(4000)",
+			// metrics.db is the highest write-volume store here, yet it was the
+			// only one left at SQLite's ~2MB default page cache — audit.db,
+			// unified_resources.db and notification_queue.db all already set
+			// this. A cache too small to hold the working set spills dirty
+			// pages mid-transaction, turning one logical write into several
+			// physical ones.
+			"cache_size(-64000)",
 		},
 	}.Encode()
 	rawDB, err := sql.Open("sqlite", dsn)
