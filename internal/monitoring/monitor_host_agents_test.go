@@ -5982,7 +5982,7 @@ func TestSyncUnifiedStorageMetricsDefersWritesToBatchSink(t *testing.T) {
 	// A sink collects the batch so the unified syncs can share one transaction.
 	// The sink path must not write through to the store itself.
 	var sink []metrics.WriteMetric
-	monitor.syncUnifiedStorageMetrics(resourceStore, &sink)
+	monitor.syncUnifiedStorageMetrics(resourceStore, resourceStore.GetAll(), &sink)
 	if len(sink) == 0 {
 		t.Fatal("expected storage writes to be collected in the batch sink")
 	}
@@ -6056,8 +6056,8 @@ func TestSyncUnifiedAgentMetricsUsesSourceObservationTimeAcrossRegistryRebuilds(
 
 	// Read-side registry rebuilds must not invent a fresh sample for the same
 	// source observation (the write amplification in #1966).
-	monitor.syncUnifiedAgentMetrics(resourceStore)
-	monitor.syncUnifiedAgentMetrics(resourceStore)
+	monitor.syncUnifiedAgentMetrics(resourceStore, resourceStore.GetAll())
+	monitor.syncUnifiedAgentMetrics(resourceStore, resourceStore.GetAll())
 	persistentStore.Flush()
 
 	inMemory := monitor.GetGuestMetrics("agent:"+targetID, time.Hour)["cpu"]
@@ -6130,8 +6130,8 @@ func TestSyncUnifiedPhysicalDiskMetricsUsesSourceObservationTimeAcrossRegistryRe
 
 	// Read-side registry rebuilds must not invent a fresh sample for the same
 	// source observation (the write amplification in #1966).
-	monitor.syncUnifiedPhysicalDiskMetrics(resourceStore)
-	monitor.syncUnifiedPhysicalDiskMetrics(resourceStore)
+	monitor.syncUnifiedPhysicalDiskMetrics(resourceStore, resourceStore.GetAll())
+	monitor.syncUnifiedPhysicalDiskMetrics(resourceStore, resourceStore.GetAll())
 
 	inMemory := monitor.GetDiskMetrics(target.ResourceID, "smart_temp", time.Hour)
 	if len(inMemory) != 1 {

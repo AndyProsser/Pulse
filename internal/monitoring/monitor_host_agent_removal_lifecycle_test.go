@@ -802,7 +802,7 @@ func TestUnifiedStorageMetricSyncPreservesHostRemovalBlock(t *testing.T) {
 		}},
 	})
 	monitor.metricsHistory = NewMetricsHistory(16, time.Hour)
-	monitor.syncUnifiedStorageMetrics(resourceStore)
+	monitor.syncUnifiedStorageMetrics(resourceStore, resourceStore.GetAll())
 
 	if got := monitor.hostContinuityStore.RemovedEntries(); len(got) != 1 {
 		t.Fatalf("storage metric sync changed durable removal entries: %+v", got)

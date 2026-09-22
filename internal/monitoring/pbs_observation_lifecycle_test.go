@@ -56,7 +56,7 @@ func TestPBSObservationHistorySurvivesRebuildsAndStoreReopen(t *testing.T) {
 			if targetID == "" {
 				t.Fatal("missing PBS datastore")
 			}
-			monitor.syncUnifiedStorageMetrics(adapter)
+			monitor.syncUnifiedStorageMetrics(adapter, adapter.GetAll())
 		}
 	}
 	want := map[string][]float64{
@@ -184,13 +184,13 @@ func TestPBSObservationHistoryAcrossMonitorReplacement(t *testing.T) {
 				if targetID == "" {
 					t.Fatal("missing PBS datastore")
 				}
-				monitor.syncUnifiedStorageMetrics(adapter)
+				monitor.syncUnifiedStorageMetrics(adapter, adapter.GetAll())
 			}
 			if generation == 1 {
 				snapshot.PBSInstances[0].Status = "online"
 				snapshot.PBSInstances[0].LastSeen = start.Add(30 * time.Second)
 				adapter.PopulateFromSnapshot(snapshot)
-				monitor.syncUnifiedStorageMetrics(adapter)
+				monitor.syncUnifiedStorageMetrics(adapter, adapter.GetAll())
 			}
 		}()
 	}

@@ -5097,8 +5097,12 @@ func (m *Monitor) updateResourceStoreForRead(state models.StateSnapshot) {
 		return
 	}
 	recordSupplementalResourceChanges(store, m.collectSupplementalChanges())
-	m.syncAllUnifiedMetrics(store)
-	m.syncUnifiedResourceAlertsToState(store.GetAll())
+	// GetAll deep-clones and re-sorts every tracked resource, so take one
+	// snapshot per pass and share it rather than having each consumer rebuild
+	// its own identical copy.
+	resources := store.GetAll()
+	m.syncAllUnifiedMetrics(store, resources)
+	m.syncUnifiedResourceAlertsToState(resources)
 }
 
 // updateResourceStore populates the canonical resource store from current
@@ -5144,7 +5148,8 @@ func (m *Monitor) updateResourceStore(state models.StateSnapshot) {
 	if atomicStore, ok := store.(AtomicSnapshotResourceStore); ok {
 		atomicStore.PopulateSnapshotAndSupplemental(snapshotForStore, recordsBySource)
 		recordSupplementalResourceChanges(store, supplementalChanges)
-		m.syncAllUnifiedMetrics(store)
+		resources := store.GetAll()
+		m.syncAllUnifiedMetrics(store, resources)
 		for source, records := range recordsBySource {
 			if len(records) == 0 {
 				continue
@@ -5154,7 +5159,7 @@ func (m *Monitor) updateResourceStore(state models.StateSnapshot) {
 				Int("records", len(records)).
 				Msg("[Resources] Atomically ingested supplemental records")
 		}
-		m.syncUnifiedResourceAlertsToState(store.GetAll())
+		m.syncUnifiedResourceAlertsToState(resources)
 		return
 	}
 
@@ -5175,8 +5180,12 @@ func (m *Monitor) updateResourceStore(state models.StateSnapshot) {
 	}
 
 	recordSupplementalResourceChanges(store, supplementalChanges)
-	m.syncAllUnifiedMetrics(store)
-	m.syncUnifiedResourceAlertsToState(store.GetAll())
+	// GetAll deep-clones and re-sorts every tracked resource, so take one
+	// snapshot per pass and share it rather than having each consumer rebuild
+	// its own identical copy.
+	resources := store.GetAll()
+	m.syncAllUnifiedMetrics(store, resources)
+	m.syncUnifiedResourceAlertsToState(resources)
 }
 
 // refreshUnifiedResourceStoreAfterAgentStateChange makes accepted agent
@@ -5278,27 +5287,33 @@ func (m *Monitor) dedupeUnifiedMetricWrites(writes []metrics.WriteMetric) []metr
 // rebuild that carried new data for several resource types opened one SQLite
 // transaction per type; batching collapses that to one (#1966). The physical
 // disk sync keeps its own transaction because its SMART path writes directly.
-func (m *Monitor) syncAllUnifiedMetrics(store ResourceStoreInterface) {
+//
+// resources is the caller's single store.GetAll() snapshot for this pass,
+// shared across all five syncs (and the alert evaluation call the caller
+// makes afterward) instead of each one rebuilding an identical copy: GetAll
+// deep-clones and re-sorts every tracked resource, so five of those six
+// per-report rebuilds were producing a discarded copy (#1966).
+func (m *Monitor) syncAllUnifiedMetrics(store ResourceStoreInterface, resources []unifiedresources.Resource) {
 	if m == nil {
 		return
 	}
 	if m.metricsStore == nil {
 		// The in-memory history path still needs to run; there is no store
 		// batch to collect.
-		m.syncUnifiedAgentMetrics(store)
-		m.syncUnifiedVMMetrics(store)
-		m.syncUnifiedStorageMetrics(store)
-		m.syncUnifiedPhysicalDiskMetrics(store)
-		m.syncUnifiedAppContainerMetrics(store)
+		m.syncUnifiedAgentMetrics(store, resources)
+		m.syncUnifiedVMMetrics(store, resources)
+		m.syncUnifiedStorageMetrics(store, resources)
+		m.syncUnifiedPhysicalDiskMetrics(store, resources)
+		m.syncUnifiedAppContainerMetrics(store, resources)
 		return
 	}
 	var batch []metrics.WriteMetric
 	sink := &batch
-	m.syncUnifiedAgentMetrics(store, sink)
-	m.syncUnifiedVMMetrics(store, sink)
-	m.syncUnifiedStorageMetrics(store, sink)
-	m.syncUnifiedAppContainerMetrics(store, sink)
-	m.syncUnifiedPhysicalDiskMetrics(store)
+	m.syncUnifiedAgentMetrics(store, resources, sink)
+	m.syncUnifiedVMMetrics(store, resources, sink)
+	m.syncUnifiedStorageMetrics(store, resources, sink)
+	m.syncUnifiedAppContainerMetrics(store, resources, sink)
+	m.syncUnifiedPhysicalDiskMetrics(store, resources)
 	if len(batch) > 0 {
 		// #1966: independently-timed agent reports each reach this point on
 		// their own schedule, so N reports/sec was still producing up to N
@@ -5310,7 +5325,7 @@ func (m *Monitor) syncAllUnifiedMetrics(store ResourceStoreInterface) {
 	}
 }
 
-func (m *Monitor) syncUnifiedAgentMetrics(store ResourceStoreInterface, sinks ...*[]metrics.WriteMetric) {
+func (m *Monitor) syncUnifiedAgentMetrics(store ResourceStoreInterface, resources []unifiedresources.Resource, sinks ...*[]metrics.WriteMetric) {
 	if store == nil || (m.metricsHistory == nil && m.metricsStore == nil) {
 		return
 	}
@@ -5336,7 +5351,7 @@ func (m *Monitor) syncUnifiedAgentMetrics(store ResourceStoreInterface, sinks ..
 		})
 	}
 	seenTargets := make(map[string]struct{})
-	for _, resource := range store.GetAll() {
+	for _, resource := range resources {
 		if resource.Type != unifiedresources.ResourceTypeAgent || resource.Metrics == nil {
 			continue
 		}
@@ -5426,7 +5441,7 @@ func (m *Monitor) syncUnifiedAgentMetrics(store ResourceStoreInterface, sinks ..
 	}
 }
 
-func (m *Monitor) syncUnifiedVMMetrics(store ResourceStoreInterface, sinks ...*[]metrics.WriteMetric) {
+func (m *Monitor) syncUnifiedVMMetrics(store ResourceStoreInterface, resources []unifiedresources.Resource, sinks ...*[]metrics.WriteMetric) {
 	if store == nil || (m.metricsHistory == nil && m.metricsStore == nil) {
 		return
 	}
@@ -5452,7 +5467,7 @@ func (m *Monitor) syncUnifiedVMMetrics(store ResourceStoreInterface, sinks ...*[
 		})
 	}
 	seenTargets := make(map[string]struct{})
-	for _, resource := range store.GetAll() {
+	for _, resource := range resources {
 		if resource.Type != unifiedresources.ResourceTypeVM || resource.Metrics == nil {
 			continue
 		}
@@ -5550,7 +5565,7 @@ func (m *Monitor) syncUnifiedVMMetrics(store ResourceStoreInterface, sinks ...*[
 	}
 }
 
-func (m *Monitor) syncUnifiedStorageMetrics(store ResourceStoreInterface, sinks ...*[]metrics.WriteMetric) {
+func (m *Monitor) syncUnifiedStorageMetrics(store ResourceStoreInterface, resources []unifiedresources.Resource, sinks ...*[]metrics.WriteMetric) {
 	if store == nil || (m.metricsHistory == nil && m.metricsStore == nil) {
 		return
 	}
@@ -5576,7 +5591,7 @@ func (m *Monitor) syncUnifiedStorageMetrics(store ResourceStoreInterface, sinks 
 		})
 	}
 	seenTargets := make(map[string]struct{})
-	for _, resource := range store.GetAll() {
+	for _, resource := range resources {
 		if resource.Type != unifiedresources.ResourceTypeStorage || resource.Metrics == nil || resource.Metrics.Disk == nil {
 			continue
 		}
@@ -5692,7 +5707,7 @@ func unifiedResourceObservedAt(resource unifiedresources.Resource, fallback time
 	return unifiedMetricObservedAt(resource, nil, fallback)
 }
 
-func (m *Monitor) syncUnifiedPhysicalDiskMetrics(store ResourceStoreInterface) {
+func (m *Monitor) syncUnifiedPhysicalDiskMetrics(store ResourceStoreInterface, resources []unifiedresources.Resource) {
 	if store == nil || m.metricsStore == nil {
 		return
 	}
@@ -5704,7 +5719,7 @@ func (m *Monitor) syncUnifiedPhysicalDiskMetrics(store ResourceStoreInterface) {
 
 	now := time.Now()
 	seenTargets := make(map[string]struct{})
-	for _, resource := range store.GetAll() {
+	for _, resource := range resources {
 		if resource.Type != unifiedresources.ResourceTypePhysicalDisk || resource.PhysicalDisk == nil {
 			continue
 		}
@@ -5771,7 +5786,7 @@ func (m *Monitor) syncUnifiedPhysicalDiskMetrics(store ResourceStoreInterface) {
 	}
 }
 
-func (m *Monitor) syncUnifiedAppContainerMetrics(store ResourceStoreInterface, sinks ...*[]metrics.WriteMetric) {
+func (m *Monitor) syncUnifiedAppContainerMetrics(store ResourceStoreInterface, resources []unifiedresources.Resource, sinks ...*[]metrics.WriteMetric) {
 	if store == nil || (m.metricsHistory == nil && m.metricsStore == nil) {
 		return
 	}
@@ -5797,7 +5812,7 @@ func (m *Monitor) syncUnifiedAppContainerMetrics(store ResourceStoreInterface, s
 		})
 	}
 	seenTargets := make(map[string]struct{})
-	for _, resource := range store.GetAll() {
+	for _, resource := range resources {
 		if resource.Type != unifiedresources.ResourceTypeAppContainer || resource.Metrics == nil {
 			continue
 		}

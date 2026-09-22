@@ -1940,7 +1940,7 @@ func TestUnifiedAppContainerMetricsUseCanonicalGuestHistoryPath(t *testing.T) {
 	}
 	source := string(data)
 	requiredSnippets := []string{
-		"m.syncUnifiedAppContainerMetrics(store)",
+		"m.syncUnifiedAppContainerMetrics(store, resources)",
 		`if target == nil || target.ResourceType != "app-container" || strings.TrimSpace(target.ResourceID) == "" {`,
 		`metricKey := fmt.Sprintf("docker:%s", targetID)`,
 		`storeWrites := make([]metrics.WriteMetric, 0)`,
@@ -1984,7 +1984,7 @@ func TestUnifiedAgentMetricsUseCanonicalHostHistoryPath(t *testing.T) {
 	}
 	source := string(data)
 	requiredSnippets := []string{
-		"m.syncUnifiedAgentMetrics(store)",
+		"m.syncUnifiedAgentMetrics(store, resources)",
 		`if target == nil || target.ResourceType != "agent" || strings.TrimSpace(target.ResourceID) == "" {`,
 		`metricKey := fmt.Sprintf("agent:%s", targetID)`,
 		`storeWrites := make([]metrics.WriteMetric, 0)`,
@@ -2006,7 +2006,7 @@ func TestUnifiedVMMetricsUseCanonicalVMHistoryPath(t *testing.T) {
 	}
 	source := string(data)
 	requiredSnippets := []string{
-		"m.syncUnifiedVMMetrics(store)",
+		"m.syncUnifiedVMMetrics(store, resources)",
 		`if target == nil || target.ResourceType != "vm" || strings.TrimSpace(target.ResourceID) == "" {`,
 		`if source == unifiedresources.SourceProxmox {`,
 		`storeWrites := make([]metrics.WriteMetric, 0)`,
@@ -2194,7 +2194,7 @@ func TestUnifiedPhysicalDiskMetricsUseCanonicalDiskHistoryPath(t *testing.T) {
 	}
 	source := string(data)
 	requiredSnippets := []string{
-		"m.syncUnifiedPhysicalDiskMetrics(store)",
+		"m.syncUnifiedPhysicalDiskMetrics(store, resources)",
 		`if target == nil || target.ResourceType != "disk" || strings.TrimSpace(target.ResourceID) == "" {`,
 		`if source == unifiedresources.SourceProxmox || source == unifiedresources.SourceAgent {`,
 		`m.writeSMARTMetrics(disk, unifiedResourceObservedAt(resource, now))`,

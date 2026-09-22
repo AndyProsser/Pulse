@@ -564,7 +564,7 @@ func TestSyncUnifiedAppContainerMetricsRecordsTrueNASHistory(t *testing.T) {
 		metricsStore:   store,
 	}
 
-	monitor.syncUnifiedAppContainerMetrics(resourceStore)
+	monitor.syncUnifiedAppContainerMetrics(resourceStore, resourceStore.GetAll())
 	store.Flush()
 
 	var appResourceID string
@@ -647,8 +647,8 @@ func TestSyncUnifiedStorageMetricsUsesPBSObservationTimeAcrossRegistryRebuilds(t
 
 	// PVE node completions and read-side refreshes can rebuild the registry
 	// repeatedly without a new PBS poll. They must not invent fresh samples.
-	monitor.syncUnifiedStorageMetrics(resourceStore)
-	monitor.syncUnifiedStorageMetrics(resourceStore)
+	monitor.syncUnifiedStorageMetrics(resourceStore, resourceStore.GetAll())
+	monitor.syncUnifiedStorageMetrics(resourceStore, resourceStore.GetAll())
 	persistentStore.Flush()
 
 	inMemory := monitor.GetStorageMetrics(targetID, time.Hour)["usage"]
@@ -718,8 +718,8 @@ func TestSyncUnifiedAppContainerMetricsUsesSourceObservationTimeAcrossRegistryRe
 
 	// Read-side registry rebuilds must not invent a fresh sample for the same
 	// source observation (the write amplification in #1966).
-	monitor.syncUnifiedAppContainerMetrics(resourceStore)
-	monitor.syncUnifiedAppContainerMetrics(resourceStore)
+	monitor.syncUnifiedAppContainerMetrics(resourceStore, resourceStore.GetAll())
+	monitor.syncUnifiedAppContainerMetrics(resourceStore, resourceStore.GetAll())
 	persistentStore.Flush()
 
 	inMemory := monitor.GetGuestMetrics("docker:"+targetID, time.Hour)["cpu"]
@@ -805,8 +805,8 @@ func TestSyncUnifiedVMMetricsUsesSourceObservationTimeAcrossRegistryRebuilds(t *
 		metricsStore:   persistentStore,
 	}
 
-	monitor.syncUnifiedVMMetrics(resourceStore)
-	monitor.syncUnifiedVMMetrics(resourceStore)
+	monitor.syncUnifiedVMMetrics(resourceStore, resourceStore.GetAll())
+	monitor.syncUnifiedVMMetrics(resourceStore, resourceStore.GetAll())
 	persistentStore.Flush()
 
 	inMemory := monitor.GetGuestMetrics(targetID, time.Hour)["cpu"]
@@ -860,7 +860,7 @@ func TestSyncUnifiedAppContainerMetricsSkipsMockOwnedTrueNASHistoryWhenMockEnabl
 		metricsStore:   store,
 	}
 
-	monitor.syncUnifiedAppContainerMetrics(resourceStore)
+	monitor.syncUnifiedAppContainerMetrics(resourceStore, resourceStore.GetAll())
 
 	if got := len(monitor.GetGuestMetrics("docker:system:truenas-main/app:nextcloud", time.Hour)["cpu"]); got != 0 {
 		t.Fatalf("expected mock-owned TrueNAS app history to be skipped, got %d cpu points", got)
@@ -897,7 +897,7 @@ func TestSyncUnifiedAgentMetricsRecordsTrueNASHostHistory(t *testing.T) {
 		metricsStore:   store,
 	}
 
-	monitor.syncUnifiedAgentMetrics(resourceStore)
+	monitor.syncUnifiedAgentMetrics(resourceStore, resourceStore.GetAll())
 	store.Flush()
 
 	var systemResourceID string
@@ -961,7 +961,7 @@ func TestSyncUnifiedAgentMetricsSkipsMockOwnedProviderHistoryWhenMockEnabled(t *
 		metricsStore:   store,
 	}
 
-	monitor.syncUnifiedAgentMetrics(resourceStore)
+	monitor.syncUnifiedAgentMetrics(resourceStore, resourceStore.GetAll())
 
 	if got := len(monitor.GetGuestMetrics("agent:truenas-main", time.Hour)["cpu"]); got != 0 {
 		t.Fatalf("expected mock-owned TrueNAS host history to be skipped, got %d cpu points", got)
@@ -1016,7 +1016,7 @@ func TestSyncUnifiedAgentMetricsRecordsVMwareHostHistory(t *testing.T) {
 		metricsStore:   store,
 	}
 
-	monitor.syncUnifiedAgentMetrics(resourceStore)
+	monitor.syncUnifiedAgentMetrics(resourceStore, resourceStore.GetAll())
 	store.Flush()
 
 	var systemResourceID string
@@ -1097,7 +1097,7 @@ func TestSyncUnifiedVMMetricsRecordsVMwareVMHistory(t *testing.T) {
 		metricsStore:   store,
 	}
 
-	monitor.syncUnifiedVMMetrics(resourceStore)
+	monitor.syncUnifiedVMMetrics(resourceStore, resourceStore.GetAll())
 	store.Flush()
 
 	var vmResourceID string
@@ -1158,7 +1158,7 @@ func TestSyncUnifiedPhysicalDiskMetricsRecordsTrueNASDiskHistory(t *testing.T) {
 		metricsStore:  store,
 	}
 
-	monitor.syncUnifiedPhysicalDiskMetrics(resourceStore)
+	monitor.syncUnifiedPhysicalDiskMetrics(resourceStore, resourceStore.GetAll())
 
 	var diskResourceID string
 	for _, resource := range resourceStore.GetAll() {
@@ -1227,8 +1227,8 @@ func TestSyncUnifiedStorageAndDiskMetricsSkipMockOwnedTrueNASHistoryWhenMockEnab
 		metricsStore:   store,
 	}
 
-	monitor.syncUnifiedStorageMetrics(resourceStore)
-	monitor.syncUnifiedPhysicalDiskMetrics(resourceStore)
+	monitor.syncUnifiedStorageMetrics(resourceStore, resourceStore.GetAll())
+	monitor.syncUnifiedPhysicalDiskMetrics(resourceStore, resourceStore.GetAll())
 
 	if got := len(monitor.GetStorageMetrics(mock.TrueNASPoolMetricID("truenas-main", "tank"), time.Hour)["usage"]); got != 0 {
 		t.Fatalf("expected mock-owned TrueNAS storage history to be skipped, got %d usage points", got)
