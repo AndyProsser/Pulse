@@ -117,6 +117,67 @@ func TestStoreCoalesceQueuedBatches(t *testing.T) {
 	}
 }
 
+// TestStoreCoalesceQueuedBatchesWaitsForNearSimultaneousWrites reproduces the
+// #1966 scenario: the four independent per-provider collector passes
+// (agent/VM/storage/app-container) each fire their own write a few
+// milliseconds apart rather than all being queued at the instant the worker
+// wakes up. With writeCoalesceWindow == 0 (the old behavior, exercised by
+// TestStoreCoalesceQueuedBatches above), coalesceQueuedRequests would only
+// see whichever of these happened to already be sitting in the channel and
+// process the rest as separate commits. With the window set, it must wait
+// long enough to catch all of them in one combined batch.
+func TestStoreCoalesceQueuedBatchesWaitsForNearSimultaneousWrites(t *testing.T) {
+	store := &Store{
+		writeCh:             make(chan writeRequest, 4),
+		writeCoalesceWindow: 150 * time.Millisecond,
+	}
+
+	initial := writeRequest{
+		metrics: []bufferedMetric{
+			{resourceType: "vm", resourceID: "vm-1", metricType: "cpu", value: 10},
+		},
+	}
+
+	var wg sync.WaitGroup
+	senders := []struct {
+		delay  time.Duration
+		metric string
+	}{
+		{20 * time.Millisecond, "memory"},
+		{40 * time.Millisecond, "disk"},
+		{60 * time.Millisecond, "net"},
+	}
+	for _, sender := range senders {
+		wg.Add(1)
+		go func(delay time.Duration, metric string) {
+			defer wg.Done()
+			time.Sleep(delay)
+			store.writeCh <- writeRequest{metrics: []bufferedMetric{
+				{resourceType: "vm", resourceID: "vm-1", metricType: metric, value: 1},
+			}}
+		}(sender.delay, sender.metric)
+	}
+
+	start := time.Now()
+	combined := store.coalesceQueuedRequests(initial)
+	elapsed := time.Since(start)
+	wg.Wait()
+
+	totalMetrics := 0
+	for _, req := range combined {
+		totalMetrics += len(req.metrics)
+	}
+	if totalMetrics != 4 {
+		t.Fatalf("expected all 4 near-simultaneous writes coalesced into one batch, got %d combined requests / %d metrics", len(combined), totalMetrics)
+	}
+	if elapsed < 60*time.Millisecond {
+		t.Fatalf("returned after %v, before the last staggered write at 60ms could have arrived — window did not actually wait", elapsed)
+	}
+	if elapsed >= store.writeCoalesceWindow+50*time.Millisecond {
+		t.Fatalf("returned after %v, well past the %v coalesce window plus scheduling slack", elapsed, store.writeCoalesceWindow)
+	}
+}
+
 func TestStoreWriteBatchSync(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewStore(DefaultConfig(dir))

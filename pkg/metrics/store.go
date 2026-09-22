@@ -213,6 +213,16 @@ type writeRequest struct {
 	done                chan struct{}
 }
 
+// hasPendingWork reports whether this request carries anything the writer needs to act on.
+// Requests that carry nothing are dropped rather than coalesced, so an empty enqueue can't
+// keep the coalescing window alive or force an otherwise-unnecessary commit.
+func (r writeRequest) hasPendingWork() bool {
+	return len(r.metrics) > 0 ||
+		len(r.availability) > 0 ||
+		len(r.availabilityDeletes) > 0 ||
+		r.done != nil
+}
+
 type metricBatchKey struct {
 	resourceType  string
 	resourceID    string
@@ -283,6 +293,14 @@ type Store struct {
 	// Write buffer
 	bufferMu sync.Mutex
 	buffer   []bufferedMetric
+
+	// writeCoalesceWindow bounds how long coalesceQueuedRequests waits, after
+	// taking its first request, for siblings to arrive before committing them
+	// together. Zero — the value a bare &Store{} gets, as several tests
+	// construct — reproduces the previous drain-only-what-is-already-queued
+	// behavior exactly. NewStore sets this to defaultWriteCoalesceWindow.
+	// See #1966.
+	writeCoalesceWindow time.Duration
 
 	// Background workers
 	writeCh                    chan writeRequest
@@ -392,15 +410,16 @@ func NewStore(config StoreConfig) (*Store, error) {
 	db := pdb.Wrap(rawDB, "metrics")
 
 	store := &Store{
-		db:                db,
-		config:            config,
-		buffer:            make([]bufferedMetric, 0, config.WriteBufferSize),
-		writeCh:           make(chan writeRequest, 100), // Buffer for write batches
-		maintenanceCh:     make(chan maintenanceRequest, 1),
-		stopCh:            make(chan struct{}),
-		doneCh:            make(chan struct{}),
-		maintenanceDoneCh: make(chan struct{}),
-		startupHook:       startupMaintenanceHook,
+		db:                  db,
+		config:              config,
+		buffer:              make([]bufferedMetric, 0, config.WriteBufferSize),
+		writeCoalesceWindow: defaultWriteCoalesceWindow,
+		writeCh:             make(chan writeRequest, 100), // Buffer for write batches
+		maintenanceCh:       make(chan maintenanceRequest, 1),
+		stopCh:              make(chan struct{}),
+		doneCh:              make(chan struct{}),
+		maintenanceDoneCh:   make(chan struct{}),
+		startupHook:         startupMaintenanceHook,
 	}
 
 	// Initialize schema
@@ -1358,26 +1377,69 @@ func coalesceMetricBatch(metrics []bufferedMetric) []bufferedMetric {
 	return coalesced
 }
 
-// coalesceQueuedRequests drains any already-queued write requests so the worker
-// can commit pending metrics in a single SQLite transaction while preserving
-// Flush completion barriers.
+// defaultWriteCoalesceWindow bounds how long coalesceQueuedRequests waits,
+// after taking its first request, for siblings to arrive before committing
+// them together. Small enough to be invisible against the ingest cadence,
+// large enough for writes issued within one ingest pass to meet.
+const defaultWriteCoalesceWindow = 150 * time.Millisecond
+
+// coalesceQueuedRequests drains queued write requests so the worker can commit
+// pending metrics in a single SQLite transaction while preserving Flush
+// completion barriers.
+//
+// The plain drain only ever caught requests that happened to already be sitting
+// in the channel at that exact instant, so writes issued a few milliseconds
+// apart — as the per-provider collector passes do — each committed separately.
+// When s.writeCoalesceWindow is positive, the worker instead lingers up to that
+// long past the first request so those siblings can join the same transaction.
+// A zero window (the default for a bare &Store{}, as tests construct)
+// reproduces the previous behavior exactly.
 func (s *Store) coalesceQueuedRequests(initial writeRequest) []writeRequest {
-	if len(initial.metrics) == 0 && len(initial.availability) == 0 && len(initial.availabilityDeletes) == 0 && initial.done == nil {
+	if !initial.hasPendingWork() {
 		return nil
 	}
 
 	combined := []writeRequest{initial}
+
+	drainQueued := func() bool {
+		select {
+		case next, ok := <-s.writeCh:
+			if !ok {
+				return false
+			}
+			if next.hasPendingWork() {
+				combined = append(combined, next)
+			}
+			return true
+		default:
+			return false
+		}
+	}
+
+	if s.writeCoalesceWindow <= 0 {
+		for drainQueued() {
+		}
+		return combined
+	}
+
+	deadline := time.NewTimer(s.writeCoalesceWindow)
+	defer deadline.Stop()
 	for {
 		select {
 		case next, ok := <-s.writeCh:
 			if !ok {
 				return combined
 			}
-			if len(next.metrics) == 0 && len(next.availability) == 0 && len(next.availabilityDeletes) == 0 && next.done == nil {
-				continue
+			if next.hasPendingWork() {
+				combined = append(combined, next)
 			}
-			combined = append(combined, next)
-		default:
+		case <-deadline.C:
+			for drainQueued() {
+			}
+			return combined
+		case <-s.stopCh:
+			for drainQueued() {
+			}
 			return combined
 		}
 	}
