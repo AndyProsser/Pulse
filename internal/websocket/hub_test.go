@@ -1245,3 +1245,63 @@ func TestBroadcastCurrentStateToTenantResolvesTenantState(t *testing.T) {
 		t.Fatalf("lazy tenant state org = %v, want org-123", payload["org"])
 	}
 }
+
+func TestBroadcastCurrentStateThrottlesRepeatedCalls(t *testing.T) {
+	hub := NewHub(nil)
+	hub.currentStateBroadcastMinInterval = 50 * time.Millisecond
+
+	hub.BroadcastCurrentState()
+	select {
+	case <-hub.broadcastSeq:
+	default:
+		t.Fatal("expected first call to enqueue")
+	}
+
+	// Calls landing inside the window are dropped outright rather than
+	// queued, since a stateBroadcastRequest carries no payload of its own -
+	// the next call after the window reopens resolves current state fresh.
+	for i := 0; i < 5; i++ {
+		hub.BroadcastCurrentState()
+	}
+	select {
+	case <-hub.broadcastSeq:
+		t.Fatal("expected calls inside the throttle window to be dropped")
+	default:
+	}
+
+	time.Sleep(60 * time.Millisecond)
+	hub.BroadcastCurrentState()
+	select {
+	case <-hub.broadcastSeq:
+	default:
+		t.Fatal("expected a call after the throttle window to enqueue")
+	}
+}
+
+func TestBroadcastCurrentStateToTenantThrottlesIndependentlyPerOrg(t *testing.T) {
+	hub := NewHub(nil)
+	hub.currentStateBroadcastMinInterval = time.Hour
+
+	hub.BroadcastCurrentStateToTenant("org-a")
+	select {
+	case <-hub.tenantBroadcast:
+	default:
+		t.Fatal("expected first call for org-a to enqueue")
+	}
+
+	// A second call for the same org within the window is dropped...
+	hub.BroadcastCurrentStateToTenant("org-a")
+	select {
+	case <-hub.tenantBroadcast:
+		t.Fatal("expected second call for org-a inside the window to be dropped")
+	default:
+	}
+
+	// ...but a different org has its own independent throttle state.
+	hub.BroadcastCurrentStateToTenant("org-b")
+	select {
+	case <-hub.tenantBroadcast:
+	default:
+		t.Fatal("expected first call for org-b to enqueue despite org-a's throttle")
+	}
+}

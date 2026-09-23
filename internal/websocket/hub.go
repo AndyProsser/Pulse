@@ -614,6 +614,20 @@ type Hub struct {
 	tenantCoalesceGeneration map[string]uint64
 	stateBroadcastWake       chan struct{}
 	stateBroadcastDone       chan struct{}
+	// currentStateBroadcastMinInterval rate-limits BroadcastCurrentState /
+	// BroadcastCurrentStateToTenant. Every individual agent check-in (Docker,
+	// Kubernetes, and unified host agent reports) calls one of these, and each
+	// call - once it clears the 100ms coalesce window above - triggers a full
+	// rebuild of the canonical frontend state plus a JSON round-trip over
+	// every resource to compute the client delta baseline. On an instance
+	// with several independently-scheduled agents that adds up to a rebuild
+	// every second or two even though any single report rarely changes
+	// anything the dashboard shows. This caps how often that rebuild can be
+	// requested; it does not change what gets sent once it runs.
+	currentStateThrottleMu           sync.Mutex
+	lastCurrentStateBroadcast        time.Time
+	lastTenantCurrentStateBroadcast  map[string]time.Time
+	currentStateBroadcastMinInterval time.Duration
 }
 
 // Message represents a WebSocket message
@@ -702,6 +716,9 @@ func NewHub(getState func(orgID string) interface{}) *Hub {
 		tenantCoalesceGeneration: make(map[string]uint64),
 		stateBroadcastWake:       make(chan struct{}, 1),
 		stateBroadcastDone:       make(chan struct{}),
+
+		lastTenantCurrentStateBroadcast:  make(map[string]time.Time),
+		currentStateBroadcastMinInterval: 2 * time.Second,
 	}
 }
 
@@ -1514,11 +1531,41 @@ func (h *Hub) BroadcastState(state interface{}) {
 	}
 }
 
+// allowCurrentStateBroadcast rate-limits current-state rebuild requests to at
+// most one per currentStateBroadcastMinInterval, per org ("" for the global/
+// single-tenant case). The first call always proceeds. A caller whose request
+// lands inside the window is skipped outright rather than queued - the next
+// call after the window reopens will pick up whatever changed in the
+// meantime, since these requests carry no payload of their own (the hub
+// resolves current state fresh when it actually builds one).
+func (h *Hub) allowCurrentStateBroadcast(orgID string) bool {
+	h.currentStateThrottleMu.Lock()
+	defer h.currentStateThrottleMu.Unlock()
+
+	now := time.Now()
+	if orgID == "" {
+		if !h.lastCurrentStateBroadcast.IsZero() && now.Sub(h.lastCurrentStateBroadcast) < h.currentStateBroadcastMinInterval {
+			return false
+		}
+		h.lastCurrentStateBroadcast = now
+		return true
+	}
+
+	if last, ok := h.lastTenantCurrentStateBroadcast[orgID]; ok && now.Sub(last) < h.currentStateBroadcastMinInterval {
+		return false
+	}
+	h.lastTenantCurrentStateBroadcast[orgID] = now
+	return true
+}
+
 // BroadcastCurrentState coalesces a state-change signal and resolves the current
 // tenant-aware state only when the broadcast window is ready to flush.
 func (h *Hub) BroadcastCurrentState() {
 	if h.isStopping() {
 		log.Debug().Msg("Skipping current state broadcast while hub is stopping")
+		return
+	}
+	if !h.allowCurrentStateBroadcast("") {
 		return
 	}
 
@@ -1577,6 +1624,9 @@ func (h *Hub) BroadcastCurrentStateToTenant(orgID string) {
 	orgID = normalizeOrgID(orgID)
 	if h.isStopping() {
 		log.Debug().Str("org_id", orgID).Msg("Skipping tenant current state broadcast while hub is stopping")
+		return
+	}
+	if !h.allowCurrentStateBroadcast(orgID) {
 		return
 	}
 
