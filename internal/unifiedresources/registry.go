@@ -5670,12 +5670,27 @@ func (rr *ResourceRegistry) ensureViewsLocked() {
 	rr.rebuildViews()
 }
 
-// withViewCache acquires a write lock to ensure views are fresh, then
-// downgrades to a read lock and calls fn. This avoids TOCTOU gaps.
+// withViewCache calls fn under a read lock, rebuilding the cached views
+// first when they're stale. Every ReadState accessor (Nodes, VMs, Hosts,
+// ...) goes through here, so the common case - views already fresh - takes
+// only the read lock instead of unconditionally acquiring the exclusive
+// lock first: on a busy registry that serialized every reader behind
+// whichever one happened to be checking freshness, even though there was
+// nothing to rebuild. The dirty check is repeated under the write lock
+// (ensureViewsLocked) since another goroutine may have rebuilt between the
+// read-lock release below and the write-lock acquire.
 func withViewCache[T any](rr *ResourceRegistry, fn func() T) T {
+	rr.mu.RLock()
+	if !rr.viewsDirty {
+		defer rr.mu.RUnlock()
+		return fn()
+	}
+	rr.mu.RUnlock()
+
 	rr.mu.Lock()
 	rr.ensureViewsLocked()
 	rr.mu.Unlock()
+
 	rr.mu.RLock()
 	defer rr.mu.RUnlock()
 	return fn()
