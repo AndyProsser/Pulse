@@ -1124,111 +1124,114 @@ func (h InstanceHealth) NormalizeCollections() InstanceHealth {
 
 // Monitor handles all monitoring operations
 type Monitor struct {
-	config                     *config.Config
-	state                      *models.State
-	orgID                      string // Organization ID for tenant isolation (empty = default/legacy)
-	mockUnifiedViewMu          sync.Mutex
-	mockUnifiedView            monitorUnifiedStateView
-	mockUnifiedViewVersion     uint64
-	mockUnifiedViewValid       bool
-	pveClients                 map[string]PVEClientInterface
-	pbsClients                 map[string]*pbs.Client
-	pmgClients                 map[string]*pmg.Client
-	availabilityStatuses       map[string]AvailabilityProbeStatus
-	availabilityByLocation     map[string]map[string]AvailabilityProbeStatus
-	availabilityProbeTrackers  map[string]availabilityProbeAssignmentTracker
-	pollProviders              map[InstanceType]PollProvider
-	pollMetrics                *PollMetrics
-	scheduler                  *AdaptiveScheduler
-	stalenessTracker           *StalenessTracker
-	taskQueue                  *TaskQueue
-	pollTimeout                time.Duration
-	circuitBreakers            map[string]*circuitBreaker
-	deadLetterQueue            *TaskQueue
-	failureCounts              map[string]int
-	lastOutcome                map[string]taskOutcome
-	backoffCfg                 backoffConfig
-	rng                        *rand.Rand
-	maxRetryAttempts           int
-	tempCollector              *TemperatureCollector // SSH-based temperature collector
-	guestMetadataStore         *config.GuestMetadataStore
-	dockerMetadataStore        *config.DockerMetadataStore
-	dockerReportOrderStore     *config.DockerReportOrderStore
-	hostMetadataStore          *config.HostMetadataStore
-	hostContinuityStore        *config.HostContinuityStore
-	hostAgentLifecycleMu       sync.RWMutex
-	mu                         sync.RWMutex
-	startTime                  time.Time
-	rateTracker                *RateTracker
-	metricsHistory             *MetricsHistory
-	metricsStore               *metrics.Store // Persistent SQLite metrics storage
-	alertManager               *alerts.Manager
-	alertResolvedAICallback    func(*alerts.Alert)
-	alertTriggeredAICallback   func(*alerts.Alert)
-	alertPushCallback          func(*alerts.Alert)
-	connectionsSnapshotLister  func() []alerts.ConnectionSnapshot // returns platform connection snapshots for the connection-degraded check
-	incidentStore              *memory.IncidentStore
-	alertProjectionReplayMu    sync.Mutex     // serializes lifecycle projection replay passes
-	alertProjectionWG          sync.WaitGroup // tracks scheduled background catch-up runs
-	notificationMgr            *notifications.NotificationManager
-	deadMan                    *deadManRuntime
-	deadManProgressUnixNano    atomic.Int64
-	deadManConfigMu            sync.RWMutex
-	deadManConfig              notifications.DeadManConfig
-	deadManConfigLoadErr       error
-	deliveryHealthProjectionMu sync.Mutex // serializes delivery-health reads and alert projection
-	lastDeliveryHealthCheck    time.Time  // throttles the notification-delivery system alert evaluation; guarded by mu
-	configPersist              *config.ConfigPersistence
-	discoveryService           *discovery.Service                         // Background discovery service
-	activePollCount            int32                                      // Number of active polling operations
-	pollCounter                int64                                      // Counter for polling cycles
-	authFailures               map[string]int                             // Track consecutive auth failures per node
-	lastAuthAttempt            map[string]time.Time                       // Track last auth attempt time
-	lastClusterCheck           map[string]time.Time                       // Track last cluster check for standalone nodes
-	lastPhysicalDiskPoll       map[string]time.Time                       // Track last physical disk poll time per instance
-	lastPVEBackupPoll          map[string]time.Time                       // Track last PVE backup poll per instance
-	vzdumpJobTaskCache         map[string]vzdumpJobTaskCacheEntry         // Cache synthesized per-guest tasks for multi-guest vzdump job runs, keyed by instance|UPID
-	lastPBSBackupPoll          map[string]time.Time                       // Track last PBS backup poll per instance
-	pveBackupInventoryReady    map[string]map[string]bool                 // Track PVE guest inventory readiness for backup orphan detection
-	pveBackupTemplateSubjects  map[string]map[string]struct{}             // Track template VMIDs excluded from runtime workloads but valid for backups
-	backupPermissionWarnings   map[string]string                          // Track backup permission issues per instance (instance -> warning message)
-	persistence                *config.ConfigPersistence                  // Add persistence for saving updated configs
-	pbsBackupPollers           map[string]bool                            // Track PBS backup polling goroutines per instance
-	pbsBackupCacheTime         map[string]map[pbsBackupGroupKey]time.Time // Track when each PBS backup group was last fetched
-	runtimePollingMu           sync.RWMutex                               // Guards runtimePollingOverride; polling goroutines read it every cycle
-	runtimePollingOverride     runtimePollingOverrides                    // Runtime polling-cadence overrides pushed by the settings API (#1619)
-	runtimeCtx                 context.Context                            // Context used while monitor is running
-	wsHub                      *websocket.Hub                             // Hub used for broadcasting state
-	diagMu                     sync.RWMutex                               // Protects diagnostic snapshot maps
-	nodeSnapshots              map[string]NodeMemorySnapshot
-	guestSnapshots             map[string]GuestMemorySnapshot
-	rrdCacheMu                 sync.RWMutex // Protects short-lived guest memory caches.
-	nodeRRDMemCache            map[string]rrdMemCacheEntry
-	vmAgentMemCache            map[string]agentMemCacheEntry
-	removedDockerHosts         map[string]time.Time            // Track deliberately removed Docker hosts (ID -> removal time)
-	dockerTokenBindings        map[string]string               // Track token ID -> Docker host identity bindings to enforce uniqueness
-	dockerIdentityFlaps        map[string]*identityFlapTracker // Track per-host identity flapping (cloned VMs sharing machine-id)
-	removedKubernetesClusters  map[string]time.Time            // Track deliberately removed Kubernetes clusters (ID -> removal time)
-	kubernetesTokenBindings    map[string]string               // Track token ID -> agent ID bindings to enforce uniqueness
-	removedHostAgents          map[string]time.Time            // Track deliberately removed host agents (ID -> removal time)
-	hostTokenBindings          map[string]string               // Track tokenID:hostname -> host identity bindings
-	hostIdentityFlaps          map[string]*identityFlapTracker // Track per-host-agent identity flapping (cloned machines sharing machine-id)
-	hostReportApplyLocksMu     sync.Mutex
-	hostReportApplyLocks       map[string]*hostReportApplyLock
-	hostReportOrderMu          sync.Mutex
-	hostReportOrders           map[string]hostReportOrder
-	dockerCommands             map[string]*dockerHostCommand
-	dockerCommandIndex         map[string]string
-	guestMetadataMu            sync.RWMutex
-	guestMetadataCache         map[string]guestMetadataCacheEntry
-	guestMetadataLimiterMu     sync.Mutex
-	guestMetadataLimiter       map[string]time.Time
-	guestMetadataSlots         chan struct{}
-	guestMetadataMinRefresh    time.Duration
-	guestMetadataRefreshJitter time.Duration
-	guestMetadataRetryBackoff  time.Duration
-	guestMetadataHoldDuration  time.Duration
-	guestAgentWorkSlots        chan struct{}
+	config                      *config.Config
+	state                       *models.State
+	orgID                       string // Organization ID for tenant isolation (empty = default/legacy)
+	mockUnifiedViewMu           sync.Mutex
+	mockUnifiedView             monitorUnifiedStateView
+	mockUnifiedViewVersion      uint64
+	mockUnifiedViewValid        bool
+	pveClients                  map[string]PVEClientInterface
+	pbsClients                  map[string]*pbs.Client
+	pmgClients                  map[string]*pmg.Client
+	availabilityStatuses        map[string]AvailabilityProbeStatus
+	availabilityByLocation      map[string]map[string]AvailabilityProbeStatus
+	availabilityProbeTrackers   map[string]availabilityProbeAssignmentTracker
+	pollProviders               map[InstanceType]PollProvider
+	pollMetrics                 *PollMetrics
+	scheduler                   *AdaptiveScheduler
+	stalenessTracker            *StalenessTracker
+	taskQueue                   *TaskQueue
+	pollTimeout                 time.Duration
+	circuitBreakers             map[string]*circuitBreaker
+	deadLetterQueue             *TaskQueue
+	failureCounts               map[string]int
+	lastOutcome                 map[string]taskOutcome
+	backoffCfg                  backoffConfig
+	rng                         *rand.Rand
+	maxRetryAttempts            int
+	tempCollector               *TemperatureCollector // SSH-based temperature collector
+	guestMetadataStore          *config.GuestMetadataStore
+	dockerMetadataStore         *config.DockerMetadataStore
+	dockerReportOrderStore      *config.DockerReportOrderStore
+	hostMetadataStore           *config.HostMetadataStore
+	hostContinuityStore         *config.HostContinuityStore
+	hostAgentLifecycleMu        sync.RWMutex
+	mu                          sync.RWMutex
+	startTime                   time.Time
+	rateTracker                 *RateTracker
+	metricsHistory              *MetricsHistory
+	metricsStore                *metrics.Store // Persistent SQLite metrics storage
+	alertManager                *alerts.Manager
+	alertResolvedAICallback     func(*alerts.Alert)
+	alertTriggeredAICallback    func(*alerts.Alert)
+	alertPushCallback           func(*alerts.Alert)
+	connectionsSnapshotLister   func() []alerts.ConnectionSnapshot // returns platform connection snapshots for the connection-degraded check
+	incidentStore               *memory.IncidentStore
+	alertProjectionReplayMu     sync.Mutex     // serializes lifecycle projection replay passes
+	alertProjectionWG           sync.WaitGroup // tracks scheduled background catch-up runs
+	notificationMgr             *notifications.NotificationManager
+	deadMan                     *deadManRuntime
+	deadManProgressUnixNano     atomic.Int64
+	deadManConfigMu             sync.RWMutex
+	deadManConfig               notifications.DeadManConfig
+	deadManConfigLoadErr        error
+	deliveryHealthProjectionMu  sync.Mutex // serializes delivery-health reads and alert projection
+	lastDeliveryHealthCheck     time.Time  // throttles the notification-delivery system alert evaluation; guarded by mu
+	configPersist               *config.ConfigPersistence
+	discoveryService            *discovery.Service                         // Background discovery service
+	activePollCount             int32                                      // Number of active polling operations
+	pollCounter                 int64                                      // Counter for polling cycles
+	authFailures                map[string]int                             // Track consecutive auth failures per node
+	lastAuthAttempt             map[string]time.Time                       // Track last auth attempt time
+	lastClusterCheck            map[string]time.Time                       // Track last cluster check for standalone nodes
+	lastPhysicalDiskPoll        map[string]time.Time                       // Track last physical disk poll time per instance
+	lastPVEBackupPoll           map[string]time.Time                       // Track last PVE backup poll per instance
+	vzdumpJobTaskCache          map[string]vzdumpJobTaskCacheEntry         // Cache synthesized per-guest tasks for multi-guest vzdump job runs, keyed by instance|UPID
+	lastPBSBackupPoll           map[string]time.Time                       // Track last PBS backup poll per instance
+	pveBackupInventoryReady     map[string]map[string]bool                 // Track PVE guest inventory readiness for backup orphan detection
+	pveBackupTemplateSubjects   map[string]map[string]struct{}             // Track template VMIDs excluded from runtime workloads but valid for backups
+	backupPermissionWarnings    map[string]string                          // Track backup permission issues per instance (instance -> warning message)
+	persistence                 *config.ConfigPersistence                  // Add persistence for saving updated configs
+	pbsBackupPollers            map[string]bool                            // Track PBS backup polling goroutines per instance
+	pbsBackupCacheTime          map[string]map[pbsBackupGroupKey]time.Time // Track when each PBS backup group was last fetched
+	runtimePollingMu            sync.RWMutex                               // Guards runtimePollingOverride; polling goroutines read it every cycle
+	runtimePollingOverride      runtimePollingOverrides                    // Runtime polling-cadence overrides pushed by the settings API (#1619)
+	runtimeCtx                  context.Context                            // Context used while monitor is running
+	wsHub                       *websocket.Hub                             // Hub used for broadcasting state
+	diagMu                      sync.RWMutex                               // Protects diagnostic snapshot maps
+	nodeSnapshots               map[string]NodeMemorySnapshot
+	guestSnapshots              map[string]GuestMemorySnapshot
+	rrdCacheMu                  sync.RWMutex // Protects short-lived guest memory caches.
+	nodeRRDMemCache             map[string]rrdMemCacheEntry
+	vmAgentMemCache             map[string]agentMemCacheEntry
+	removedDockerHosts          map[string]time.Time            // Track deliberately removed Docker hosts (ID -> removal time)
+	dockerTokenBindings         map[string]string               // Track token ID -> Docker host identity bindings to enforce uniqueness
+	dockerIdentityFlaps         map[string]*identityFlapTracker // Track per-host identity flapping (cloned VMs sharing machine-id)
+	removedKubernetesClusters   map[string]time.Time            // Track deliberately removed Kubernetes clusters (ID -> removal time)
+	kubernetesTokenBindings     map[string]string               // Track token ID -> agent ID bindings to enforce uniqueness
+	removedHostAgents           map[string]time.Time            // Track deliberately removed host agents (ID -> removal time)
+	hostTokenBindings           map[string]string               // Track tokenID:hostname -> host identity bindings
+	hostIdentityFlaps           map[string]*identityFlapTracker // Track per-host-agent identity flapping (cloned machines sharing machine-id)
+	hostReportApplyLocksMu      sync.Mutex
+	hostReportApplyLocks        map[string]*hostReportApplyLock
+	hostReportOrderMu           sync.Mutex
+	hostReportOrders            map[string]hostReportOrder
+	resourceStoreRefreshMu      sync.Mutex
+	resourceStoreRefreshRunning bool
+	resourceStoreRefreshPending bool
+	dockerCommands              map[string]*dockerHostCommand
+	dockerCommandIndex          map[string]string
+	guestMetadataMu             sync.RWMutex
+	guestMetadataCache          map[string]guestMetadataCacheEntry
+	guestMetadataLimiterMu      sync.Mutex
+	guestMetadataLimiter        map[string]time.Time
+	guestMetadataSlots          chan struct{}
+	guestMetadataMinRefresh     time.Duration
+	guestMetadataRefreshJitter  time.Duration
+	guestMetadataRetryBackoff   time.Duration
+	guestMetadataHoldDuration   time.Duration
+	guestAgentWorkSlots         chan struct{}
 	// Configurable guest agent timeouts (refs #592)
 	guestAgentFSInfoTimeout   time.Duration
 	guestAgentNetworkTimeout  time.Duration
@@ -5193,11 +5196,44 @@ func (m *Monitor) updateResourceStore(state models.StateSnapshot) {
 // WebSocket broadcasts may also rebuild the store for their own hydrate path,
 // but client presence must never be the trigger that publishes agent-backed
 // runtime truth or retires removed inventory.
+//
+// updateResourceStore rebuilds the entire canonical registry (clone every
+// resource, several times over) from the current state, and every agent
+// report handler - host, Docker, and Kubernetes alike, 8 call sites in this
+// package plus kubernetes_agents.go - calls this on every accepted report.
+// With several agents reporting independently, concurrent calls used to each
+// pay that full rebuild cost separately. This coalesces them instead: a
+// caller that finds a rebuild already running just marks that another pass
+// is needed once it finishes, rather than starting its own redundant one.
+// The uncontended case - no rebuild currently running, the overwhelmingly
+// common case - is unchanged: it runs synchronously and immediately, exactly
+// as before.
 func (m *Monitor) refreshUnifiedResourceStoreAfterAgentStateChange() {
 	if m == nil || m.state == nil {
 		return
 	}
-	m.updateResourceStore(m.GetState())
+
+	m.resourceStoreRefreshMu.Lock()
+	if m.resourceStoreRefreshRunning {
+		m.resourceStoreRefreshPending = true
+		m.resourceStoreRefreshMu.Unlock()
+		return
+	}
+	m.resourceStoreRefreshRunning = true
+	m.resourceStoreRefreshMu.Unlock()
+
+	for {
+		m.updateResourceStore(m.GetState())
+
+		m.resourceStoreRefreshMu.Lock()
+		if !m.resourceStoreRefreshPending {
+			m.resourceStoreRefreshRunning = false
+			m.resourceStoreRefreshMu.Unlock()
+			return
+		}
+		m.resourceStoreRefreshPending = false
+		m.resourceStoreRefreshMu.Unlock()
+	}
 }
 
 func recordSupplementalResourceChanges(store ResourceStoreInterface, changes []unifiedresources.ResourceChange) {
