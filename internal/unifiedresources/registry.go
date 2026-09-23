@@ -1273,6 +1273,34 @@ func seededVMwareSourceID(resource *Resource) string {
 	return strings.Join(parts, ":")
 }
 
+// snapshotForDiff returns a shallow copy of every resource - one struct copy
+// per resource, none of cloneResource's ~20 nested deep-clones - for
+// synchronous, read-only, single-use comparison such as before/after change
+// detection. Unordered: unlike List(), callers that need name-sorted output
+// must not use this.
+//
+// This is safe only where the registry is guaranteed not to be concurrently
+// mutated for the duration the result is used, and the result itself is
+// never retained past that: replaceRegistryLocked and
+// PopulateSupplementalRecords are the registry's only two mutation entry
+// points, both serialized on MonitorAdapter.mutationMu, and both use this
+// only as an immediately-consumed diff input (never stored, never returned
+// to a caller outside that lock). Any other use - anything that might
+// outlive the lock, or where the registry could still be mutated
+// concurrently - must use List() instead, which clones independently of the
+// registry's own lifetime for exactly that reason.
+func (rr *ResourceRegistry) snapshotForDiff() []Resource {
+	rr.mu.RLock()
+	defer rr.mu.RUnlock()
+	out := make([]Resource, 0, len(rr.resources))
+	for _, r := range rr.resources {
+		if r != nil {
+			out = append(out, *r)
+		}
+	}
+	return out
+}
+
 // List returns all resources.
 func (rr *ResourceRegistry) List() []Resource {
 	rr.mu.RLock()
