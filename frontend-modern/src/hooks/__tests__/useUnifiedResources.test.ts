@@ -294,6 +294,7 @@ describe('useUnifiedResources', () => {
 
     await waitForResourceCount(() => result!.resources().length);
     expect(result!.resources()[0]?.cpu?.current).toBe(15);
+    expect(result!.resourceSnapshotChange().changedIds).toBeNull();
 
     batch(() => {
       setWsState('resources', 0, 'cpu', 'current', 88);
@@ -302,6 +303,7 @@ describe('useUnifiedResources', () => {
     });
 
     await waitForValue(() => result!.resources()[0]?.cpu?.current, 88);
+    expect(result!.resourceSnapshotChange().changedIds).toEqual(new Set(['vm-1']));
     expect(apiFetchMock).not.toHaveBeenCalled();
     dispose();
   });
