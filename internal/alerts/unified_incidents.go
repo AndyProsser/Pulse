@@ -308,6 +308,16 @@ func (m *Manager) SyncUnifiedResourceIncidents(resources []unifiedresources.Reso
 
 		m.preserveAlertState(storageKey, alert)
 		m.setActiveAlertNoLock(storageKey, alert)
+		if _, stored := m.getActiveAlertNoLock(storageKey); !stored {
+			// setActiveAlertNoLock silently drops alerts for a resource under
+			// operator suppression (retired/muted/maintenance) rather than
+			// tracking them as active. Without this check, every sync cycle
+			// re-observes the still-unresolved condition, finds nothing in
+			// activeAlerts to recognize as "already firing" (because it was
+			// never actually stored), and treats it as new again — dispatching
+			// a duplicate notification on every single cycle instead of once.
+			continue
+		}
 		m.recentAlerts[canonicalTrackingKeyForAlert(alert)] = alert
 		m.historyManager.AddAlert(*alert)
 		m.recordAlertEvent(eventlog.TypeFired, alert, storageKey, "unified-incident", alert.Message, nil)
