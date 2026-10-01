@@ -3,7 +3,6 @@ package unifiedresources
 import (
 	"crypto/sha256"
 	"encoding/json"
-	"fmt"
 	"sort"
 	"strings"
 	"sync"
