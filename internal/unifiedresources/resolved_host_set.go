@@ -105,7 +105,7 @@ func ResolveHosts(candidates []HostCandidate) *ResolvedHostSet {
 
 	for i := range candidates {
 		c := &candidates[i]
-		matches := matcher.FindCandidates(c.Identity)
+		matches := matcher.FindHighConfidenceCandidates(c.Identity)
 		for _, m := range matches {
 			if m.ID == c.ID {
 				continue

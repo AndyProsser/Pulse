@@ -227,6 +227,51 @@ func (m *IdentityMatcher) FindCandidates(identity ResourceIdentity) []MatchCandi
 	return list
 }
 
+// FindHighConfidenceCandidates returns the FindCandidates matches at or above
+// HighConfidenceThreshold, in the same order and with the same reasons. Callers
+// that only act on high-confidence matches (the top-level system and resolved
+// host groupers) use it because the lower tiers (hostname-only, ip-only) have
+// to collect every id in a shared hostname or IP bucket and sort the lot, only
+// for the caller to discard them. identity_high_confidence_test.go holds it to
+// FindCandidates, so the tiers below must be kept in step with it.
+func (m *IdentityMatcher) FindHighConfidenceCandidates(identity ResourceIdentity) []MatchCandidate {
+	candidates := make(map[string]MatchCandidate)
+
+	// Machine ID match
+	if identity.MachineID != "" {
+		if existing, ok := m.byMachineID[strings.TrimSpace(identity.MachineID)]; ok {
+			candidates[existing] = MatchCandidate{ID: existing, Confidence: 1.0, Reason: "machine_id"}
+		}
+	}
+
+	// DMI UUID match
+	if identity.DMIUUID != "" {
+		if existing, ok := m.byDMIUUID[strings.TrimSpace(identity.DMIUUID)]; ok {
+			candidates[existing] = promoteCandidate(candidates[existing], MatchCandidate{ID: existing, Confidence: 0.99, Reason: "dmi_uuid"})
+		}
+	}
+
+	// Hostname + MAC overlap. Hostnames only matter when a MAC can overlap.
+	if macIDs := m.collectIDs(m.byMAC, identity.MACAddresses, NormalizeMAC); len(macIDs) > 0 {
+		hostnameIDs := m.collectIDs(m.byHostname, identity.Hostnames, NormalizeHostname)
+		for id := range intersectIDs(hostnameIDs, macIDs) {
+			candidates[id] = promoteCandidate(candidates[id], MatchCandidate{ID: id, Confidence: 0.90, Reason: "hostname+mac"})
+		}
+	}
+
+	list := make([]MatchCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		list = append(list, candidate)
+	}
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].Confidence == list[j].Confidence {
+			return list[i].ID < list[j].ID
+		}
+		return list[i].Confidence > list[j].Confidence
+	})
+	return list
+}
+
 func (m *IdentityMatcher) collectIDs(index map[string]map[string]struct{}, values []string, normalize func(string) string) map[string]struct{} {
 	ids := make(map[string]struct{})
 	for _, value := range values {

@@ -51,6 +51,14 @@ type topLevelSystemFallbackTarget struct {
 // ResolveTopLevelSystems builds the shared top-level system grouping used by
 // monitored-system counting and connected-infrastructure inventory surfaces.
 func ResolveTopLevelSystems(resources []Resource) TopLevelSystemResolver {
+	return resolveTopLevelSystems(resources, (*IdentityMatcher).FindHighConfidenceCandidates)
+}
+
+// identityCandidateFinder looks up identity matches in a matcher. The resolver
+// takes it as a parameter so tests can compare lookups against each other.
+type identityCandidateFinder func(*IdentityMatcher, ResourceIdentity) []MatchCandidate
+
+func resolveTopLevelSystems(resources []Resource, findCandidates identityCandidateFinder) TopLevelSystemResolver {
 	if len(resources) == 0 {
 		return TopLevelSystemResolver{
 			groups:          nil,
@@ -122,7 +130,7 @@ func ResolveTopLevelSystems(resources []Resource) TopLevelSystemResolver {
 		matcher.Add(matcherID, nodes[i].identity)
 	}
 	for i := range nodes {
-		matches := matcher.FindCandidates(nodes[i].identity)
+		matches := findCandidates(matcher, nodes[i].identity)
 		for _, match := range matches {
 			if match.Confidence < HighConfidenceThreshold {
 				continue
