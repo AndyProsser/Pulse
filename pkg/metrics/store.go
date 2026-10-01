@@ -479,6 +479,12 @@ func (s *Store) initSchema() error {
 
 var metricsIdentityColumns = []string{"resource_type", "resource_id", "metric_type", "tier", "timestamp"}
 
+// metricsTimeMajorIdentityColumns is the same five-column identity in the order
+// idx_metrics_query_all uses. When that index is unique it already enforces
+// identity and serves every read, so keeping idx_metrics_lookup as well makes
+// each insert dirty a second full B-tree (the #1966 write amplification).
+var metricsTimeMajorIdentityColumns = []string{"resource_type", "resource_id", "tier", "timestamp", "metric_type"}
+
 // ensureMetricsIdentityIndex keeps one B-tree for both metric identity and
 // single-series range queries. Older databases have two indexes containing the
 // same five columns in different orders: idx_metrics_lookup serves reads while
@@ -500,6 +506,20 @@ func (s *Store) ensureMetricsIdentityIndex() error {
 		// the startup-maintenance worker so NewStore latency stays bounded.
 		s.identityMigrationPending.Store(true)
 		log.Info().Msg("Scheduled metrics identity index consolidation")
+		return nil
+	}
+	// A unique time-major idx_metrics_query_all (written by main-line builds)
+	// makes idx_metrics_lookup redundant. Do not recreate it, and drop it if a
+	// previous start left one behind; on v6.4.5 it otherwise returns on every
+	// start with a 30s+ rebuild and roughly doubles metrics write volume.
+	timeMajorCurrent, err := s.metricsIndexMatches("idx_metrics_query_all", true, metricsTimeMajorIdentityColumns)
+	if err != nil {
+		return fmt.Errorf("inspect time-major metrics identity index: %w", err)
+	}
+	if timeMajorCurrent {
+		if _, err := s.db.Exec(`DROP INDEX IF EXISTS idx_metrics_lookup`); err != nil {
+			return fmt.Errorf("drop redundant lookup index: %w", err)
+		}
 		return nil
 	}
 	if lookupCurrent {
