@@ -417,6 +417,12 @@ func (c *Client) queueStateTooLargeLocked(
 }
 
 func (c *Client) queueStateDelta(current *clientStateSnapshot) (int, bool, bool, error) {
+	return c.queueStateDeltaShared(current, nil)
+}
+
+// queueStateDeltaShared is queueStateDelta drawing the delta from cache, so
+// clients on the same baseline share one diff and one encoding per broadcast.
+func (c *Client) queueStateDeltaShared(current *clientStateSnapshot, cache *stateDeltaCache) (int, bool, bool, error) {
 	if current == nil {
 		return 0, false, false, fmt.Errorf("current state snapshot is nil")
 	}
@@ -438,17 +444,13 @@ func (c *Client) queueStateDelta(current *clientStateSnapshot) (int, bool, bool,
 		return 0, false, false, nil
 	}
 
-	delta, err := buildClientStateDelta(c.stateSnapshot, current)
+	data, empty, err := cache.encodedDelta(c.stateSnapshot, current)
 	if err != nil {
 		return 0, true, false, err
 	}
-	if len(delta) == 0 {
+	if empty {
 		c.stateSnapshot = current
 		return 0, false, true, nil
-	}
-	data, err := json.Marshal(Message{Type: "rawData", Data: delta})
-	if err != nil {
-		return 0, true, false, err
 	}
 	if limit := c.inboundLimitBytes(); limit > 0 && int64(len(data)) > limit {
 		dataLen, sent, markerErr := c.queueStateTooLargeLocked("rawData", current, len(data), limit)
@@ -457,6 +459,7 @@ func (c *Client) queueStateDelta(current *clientStateSnapshot) (int, bool, bool,
 	if !c.safeSend(data) {
 		return len(data), true, false, nil
 	}
+	stateDeltaBytes.Add(float64(len(data)))
 	c.stateSnapshot = current
 	return len(data), true, true, nil
 }
@@ -1284,10 +1287,12 @@ func (h *Hub) dispatchStateBroadcast(pending *Message, orgID string) {
 	}
 	defer h.releaseStateBuildSlot()
 	if _, currentStateRequest := h.messageHasCurrentStateRequest(*pending); currentStateRequest {
+		buildStart := time.Now()
 		prepared, ok := h.prepareMessageForMarshal(*pending, orgID)
 		if !ok {
 			return
 		}
+		stateBroadcastStageSeconds.WithLabelValues("frontend_state").Observe(time.Since(buildStart).Seconds())
 		h.dispatchCurrentStateSnapshot(prepared.Data, orgID)
 		return
 	}
@@ -1303,11 +1308,20 @@ func (h *Hub) dispatchStateBroadcast(pending *Message, orgID string) {
 }
 
 func (h *Hub) dispatchCurrentStateSnapshot(state interface{}, orgID string) {
+	snapshotStart := time.Now()
 	snapshot, err := buildClientStateSnapshot(state)
 	if err != nil {
 		log.Error().Err(err).Str("org_id", normalizeOrgID(orgID)).Msg("Failed to build WebSocket state delta snapshot")
 		return
 	}
+
+	stateBroadcastStageSeconds.WithLabelValues("snapshot").Observe(time.Since(snapshotStart).Seconds())
+	stateBroadcasts.Inc()
+	stateSnapshotBytes.Set(float64(snapshot.encodedSize()))
+	deltaStart := time.Now()
+	defer func() {
+		stateBroadcastStageSeconds.WithLabelValues("deltas").Observe(time.Since(deltaStart).Seconds())
+	}()
 
 	h.mu.RLock()
 	clients := make([]*Client, 0, len(h.clients))
@@ -1322,8 +1336,9 @@ func (h *Hub) dispatchCurrentStateSnapshot(state interface{}, orgID string) {
 	}
 	h.mu.RUnlock()
 
+	cache := newStateDeltaCache()
 	for _, client := range clients {
-		dataLen, attempted, sent, queueErr := client.queueStateDelta(snapshot)
+		dataLen, attempted, sent, queueErr := client.queueStateDeltaShared(snapshot, cache)
 		if queueErr != nil {
 			log.Error().Err(queueErr).Str("client", client.id).Str("org_id", client.orgID).Msg("Failed to marshal WebSocket state delta")
 			continue
