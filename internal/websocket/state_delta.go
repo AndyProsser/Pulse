@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"sync"
 )
 
 const resourceDeltaField = "resourceDelta"
@@ -85,11 +86,31 @@ func extractKeyedEntries(
 	return byID, order, nil
 }
 
+// snapshotEncodeBuffers holds the scratch buffer a state snapshot is encoded
+// into. The encoded bytes are only parsed back into per-field and per-entry
+// RawMessage copies and never retained, so the buffer can be reused. json.Marshal
+// grows a fresh buffer for every broadcast, which on a multi-megabyte state was
+// the largest single allocation source in the broadcast worker (#2199).
+var snapshotEncodeBuffers = sync.Pool{New: func() any { return new(bytes.Buffer) }}
+
+// maxPooledSnapshotBuffer bounds what is returned to the pool so one unusually
+// large state does not pin its buffer for the life of the process.
+const maxPooledSnapshotBuffer = 64 << 20
+
 func buildClientStateSnapshot(state interface{}) (*clientStateSnapshot, error) {
-	encoded, err := json.Marshal(state)
-	if err != nil {
+	buf := snapshotEncodeBuffers.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer func() {
+		if buf.Cap() <= maxPooledSnapshotBuffer {
+			snapshotEncodeBuffers.Put(buf)
+		}
+	}()
+	// Encoder.Encode appends a trailing newline, which the decode below ignores.
+	if err := json.NewEncoder(buf).Encode(state); err != nil {
 		return nil, fmt.Errorf("marshal state snapshot: %w", err)
 	}
+	encoded := buf.Bytes()
+	var err error
 
 	fields := make(map[string]json.RawMessage)
 	if err := json.Unmarshal(encoded, &fields); err != nil {
