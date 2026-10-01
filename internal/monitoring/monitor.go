@@ -5198,11 +5198,7 @@ func (m *Monitor) updateResourceStore(state models.StateSnapshot) {
 		atomicStore.PopulateSnapshotAndSupplemental(snapshotForStore, recordsBySource)
 		recordSupplementalResourceChanges(store, supplementalChanges)
 		store = newResourceSnapshotStore(store)
-		m.syncUnifiedAgentMetrics(store)
-		m.syncUnifiedVMMetrics(store)
-		m.syncUnifiedStorageMetrics(store)
-		m.syncUnifiedPhysicalDiskMetrics(store)
-		m.syncUnifiedAppContainerMetrics(store)
+		m.syncAllUnifiedMetrics(store)
 		for source, records := range recordsBySource {
 			if len(records) == 0 {
 				continue
