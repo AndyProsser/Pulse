@@ -20,6 +20,32 @@ func cloneResource(in *Resource) Resource {
 		return Resource{}
 	}
 
+	out := copyResourceFields(in)
+	out.FacetCounts = resourceFacetCounts(out)
+	RefreshCanonicalMetadata(&out)
+	return out
+}
+
+// cloneRegistryResource deep-copies a resource the registry already holds in
+// refreshed form (see refreshStoredResourcesLocked), skipping the canonical
+// metadata recompute that cloneResource repeats on every copy.
+func cloneRegistryResource(in *Resource) Resource {
+	if in == nil {
+		return Resource{}
+	}
+	return copyResourceFields(in)
+}
+
+func cloneRegistryResourcePtr(in *Resource) *Resource {
+	if in == nil {
+		return nil
+	}
+	out := cloneRegistryResource(in)
+	return &out
+}
+
+// copyResourceFields deep-copies every reference field of a resource.
+func copyResourceFields(in *Resource) Resource {
 	out := *in
 	out.DiscoveryTarget = cloneDiscoveryTarget(in.DiscoveryTarget)
 	out.DiscoveryReadiness = cloneResourceDiscoveryReadiness(in.DiscoveryReadiness)
@@ -52,8 +78,6 @@ func cloneResource(in *Resource) Resource {
 	}
 	out.Availability = cloneAvailabilityData(in.Availability)
 	out.AvailabilityChecks = cloneAvailabilityDataSlice(in.AvailabilityChecks)
-	out.FacetCounts = resourceFacetCounts(out)
-	RefreshCanonicalMetadata(&out)
 	return out
 }
 

@@ -1296,12 +1296,15 @@ func seededVMwareSourceID(resource *Resource) string {
 
 // List returns all resources.
 func (rr *ResourceRegistry) List() []Resource {
-	rr.mu.RLock()
-	defer rr.mu.RUnlock()
-	out := make([]Resource, 0, len(rr.resources))
-	for _, r := range rr.resources {
-		out = append(out, cloneResource(r))
-	}
+	// Reading through the view cache guarantees the stored resources were
+	// refreshed after the last mutation, so they can be copied as they are.
+	out := withViewCache(rr, func() []Resource {
+		out := make([]Resource, 0, len(rr.resources))
+		for _, r := range rr.resources {
+			out = append(out, cloneRegistryResource(r))
+		}
+		return out
+	})
 	sortResourcesByName(out)
 	return out
 }
@@ -5851,6 +5854,20 @@ func readCleanViewCache[T any](rr *ResourceRegistry, fn func() T) (T, bool) {
 	return fn(), true
 }
 
+// refreshStoredResourcesLocked brings every stored resource's derived fields
+// (facet counts, canonical identity, platform scopes, policy metadata) up to
+// date in place, once per view rebuild. Every registry mutation marks the
+// views dirty, so whenever the views are clean the stored resources equal a
+// fully refreshed clone and readers can copy them with cloneRegistryResource
+// instead of recomputing the metadata on every copy.
+// Caller must hold rr.mu for writing.
+func (rr *ResourceRegistry) refreshStoredResourcesLocked() {
+	for _, r := range rr.resources {
+		r.FacetCounts = resourceFacetCounts(*r)
+		RefreshCanonicalMetadata(r)
+	}
+}
+
 // rebuildViews recomputes all cached view slices from the current resource map.
 // Caller must hold rr.mu for writing.
 func (rr *ResourceRegistry) rebuildViews() {
@@ -5877,8 +5894,9 @@ func (rr *ResourceRegistry) rebuildViews() {
 	sourceTargetsIndex := rr.buildSourceTargetsIndexLocked()
 	rr.cachedSourceTargets = sourceTargetsIndex
 
+	rr.refreshStoredResourcesLocked()
 	for _, r := range rr.resources {
-		viewResource := cloneResourcePtr(r)
+		viewResource := cloneRegistryResourcePtr(r)
 		viewResource.MetricsTarget = rr.metricsTargetFromSourceTargets(r, sourceTargetsIndex[r.ID])
 		switch r.Type {
 		case ResourceTypeVM:
