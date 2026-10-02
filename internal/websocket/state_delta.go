@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/rcourtman/pulse-go-rewrite/internal/models"
 	"reflect"
 	"sort"
 	"unicode/utf8"
@@ -109,6 +110,11 @@ func extractKeyedEntries(
 // handle (escaped keys, malformed or duplicate ids, a non-object state) goes
 // through the reference decoder so its results and errors are unchanged.
 func buildClientStateSnapshot(state interface{}) (*clientStateSnapshot, error) {
+	if frontend, ok := encodedResourcesFor(state); ok {
+		if snapshot, err := snapshotFromEncodedResources(frontend); err == nil {
+			return snapshot, nil
+		}
+	}
 	owned, err := json.Marshal(state)
 	if err != nil {
 		return nil, fmt.Errorf("marshal state snapshot: %w", err)
@@ -120,6 +126,13 @@ func buildClientStateSnapshot(state interface{}) (*clientStateSnapshot, error) {
 }
 
 func snapshotFromOwnedEncoded(owned []byte) (*clientStateSnapshot, error) {
+	return snapshotFromOwnedEncodedWith(owned, nil)
+}
+
+// snapshotFromOwnedEncodedWith builds the snapshot from an encoded state.
+// When encodedResources is non-nil it supplies the resource entries, already
+// keyed, and whatever the encoded state holds under "resources" is ignored.
+func snapshotFromOwnedEncodedWith(owned []byte, encodedResources []models.EncodedResource) (*clientStateSnapshot, error) {
 	fields := make(map[string]json.RawMessage)
 	err := forEachObjectMember(owned, func(key []byte, escaped bool, value []byte) error {
 		// encoding/json rewrites invalid UTF-8 in keys; leave that to it.
@@ -135,7 +148,15 @@ func snapshotFromOwnedEncoded(owned []byte) (*clientStateSnapshot, error) {
 
 	resources := make(map[string]json.RawMessage)
 	resourceOrder := make([]string, 0)
-	if encodedResources, ok := fields["resources"]; ok {
+	if encodedResources != nil {
+		resources = make(map[string]json.RawMessage, len(encodedResources))
+		resourceOrder = make([]string, 0, len(encodedResources))
+		for _, entry := range encodedResources {
+			resources[entry.ID] = json.RawMessage(entry.JSON)
+			resourceOrder = append(resourceOrder, entry.ID)
+		}
+		delete(fields, "resources")
+	} else if encodedResources, ok := fields["resources"]; ok {
 		resources, resourceOrder, err = extractKeyedEntriesFast(encodedResources)
 		if err != nil {
 			return nil, err
