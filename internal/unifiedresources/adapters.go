@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -3775,7 +3776,11 @@ func labelsToTags(labels map[string]string) []string {
 		}
 		out = append(out, key+":"+v)
 	}
-	return uniqueStrings(out)
+	// Map iteration order is random; sort so the same labels always yield the
+	// same tags and unchanged resources don't diff on every rebuild.
+	out = uniqueStrings(out)
+	slices.Sort(out)
+	return out
 }
 
 func convertInterfaces(interfaces []models.HostNetworkInterface) []NetworkInterface {
