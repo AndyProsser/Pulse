@@ -1444,8 +1444,47 @@ func (m *Monitor) snapshotBackedUnifiedReadState() unifiedresources.ReadState {
 
 	registry := unifiedresources.NewRegistry(nil)
 	thresholds := m.resourceStaleThresholds()
-	registry.IngestSnapshotWithStaleThresholds(m.state.GetSnapshot(), thresholds)
+	registry.IngestSnapshotWithStaleThresholds(hostLookupSnapshot(m.state.GetSnapshot()), thresholds)
 	return unifiedresources.NewMonitorAdapterWithStaleThresholds(registry, thresholds)
+}
+
+// hostLookupSnapshot drops the Kubernetes metadata collections from a
+// snapshot used only to resolve host and Docker-host identity. Agent reports
+// build this read state twice per report, and on a typical cluster the
+// secrets, RBAC objects, events and replica sets are most of the estate while
+// none of them can ever be, or merge into, a host. Clusters, nodes and
+// workloads are kept, as is any collection not listed here.
+func hostLookupSnapshot(snapshot models.StateSnapshot) models.StateSnapshot {
+	if len(snapshot.KubernetesClusters) == 0 {
+		return snapshot
+	}
+	clusters := make([]models.KubernetesCluster, len(snapshot.KubernetesClusters))
+	for i, cluster := range snapshot.KubernetesClusters {
+		cluster.Namespaces = nil
+		cluster.ReplicaSets = nil
+		cluster.Services = nil
+		cluster.Ingresses = nil
+		cluster.EndpointSlices = nil
+		cluster.NetworkPolicies = nil
+		cluster.PersistentVolumes = nil
+		cluster.PersistentVolumeClaims = nil
+		cluster.StorageClasses = nil
+		cluster.ConfigMaps = nil
+		cluster.Secrets = nil
+		cluster.ServiceAccounts = nil
+		cluster.Roles = nil
+		cluster.ClusterRoles = nil
+		cluster.RoleBindings = nil
+		cluster.ClusterRoleBindings = nil
+		cluster.ResourceQuotas = nil
+		cluster.LimitRanges = nil
+		cluster.PodDisruptionBudgets = nil
+		cluster.HorizontalPodAutoscalers = nil
+		cluster.Events = nil
+		clusters[i] = cluster
+	}
+	snapshot.KubernetesClusters = clusters
+	return snapshot
 }
 
 func (m *Monitor) hostContinuitySince(now time.Time) time.Time {
