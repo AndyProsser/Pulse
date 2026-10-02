@@ -36,7 +36,7 @@ func TestCachedBroadcastConversionMatchesUncached(t *testing.T) {
 	}
 
 	cache := newBroadcastResourceCache()
-	check := func(round string) (hits, misses int) {
+	check := func(round string) (hits, misses, patched int) {
 		t.Helper()
 		before := fingerprint()
 		want, wantCatalogs := convertResourcesForBroadcast(resources)
@@ -65,17 +65,18 @@ func TestCachedBroadcastConversionMatchesUncached(t *testing.T) {
 				t.Fatalf("%s: encoding %d (%s) differs from json.Marshal", round, i, want[i].ID)
 			}
 		}
-		return int(after.hits - stats.hits), int(after.misses - stats.misses)
+		return int(after.hits - stats.hits), int(after.misses - stats.misses), int(after.patched - stats.patched)
 	}
 
-	if hits, misses := check("cold"); hits != 0 || misses == 0 {
+	if hits, misses, _ := check("cold"); hits != 0 || misses == 0 {
 		t.Fatalf("cold: hits=%d misses=%d, want only misses", hits, misses)
 	}
-	if hits, misses := check("warm"); misses != 0 || hits == 0 {
-		t.Fatalf("warm: hits=%d misses=%d, want only hits", hits, misses)
+	if hits, misses, patched := check("warm"); misses != 0 || patched != 0 || hits == 0 {
+		t.Fatalf("warm: hits=%d misses=%d patched=%d, want only hits", hits, misses, patched)
 	}
 
-	// Change three VMs in different ways; only those three may miss.
+	// Change three VMs in different ways. A changed heartbeat alone is
+	// patched into the cached encoding; any other change misses.
 	changed := 0
 	for i := range resources {
 		if resources[i].Type != unifiedresources.ResourceTypeVM || changed == 3 {
@@ -94,7 +95,32 @@ func TestCachedBroadcastConversionMatchesUncached(t *testing.T) {
 	if changed != 3 {
 		t.Fatalf("fixture has %d VMs, need 3", changed)
 	}
-	if hits, misses := check("three VMs changed"); misses != 3 {
-		t.Fatalf("three VMs changed: hits=%d misses=%d, want exactly 3 misses", hits, misses)
+	if hits, misses, patched := check("three VMs changed"); misses != 2 || patched != 1 {
+		t.Fatalf("three VMs changed: hits=%d misses=%d patched=%d, want 2 misses and 1 patch", hits, misses, patched)
+	}
+
+	// A heartbeat across the whole estate - every resource's sighting and
+	// refresh timestamps move, as when a Kubernetes cluster reports - is
+	// patched everywhere and rebuilds nothing. One resource goes from never
+	// seen to seen.
+	sightings, firstSighting := 0, false
+	for i := range resources {
+		resources[i].UpdatedAt = resources[i].UpdatedAt.Add(time.Minute)
+		if readiness := resources[i].DiscoveryReadiness; readiness != nil {
+			copied := *readiness
+			copied.GeneratedAt = copied.GeneratedAt.Add(time.Minute)
+			resources[i].DiscoveryReadiness = &copied
+		}
+		switch {
+		case !resources[i].LastSeen.IsZero():
+			resources[i].LastSeen = resources[i].LastSeen.Add(time.Minute)
+			sightings++
+		case !firstSighting:
+			resources[i].LastSeen = time.Unix(1790933430, 0)
+			sightings, firstSighting = sightings+1, true
+		}
+	}
+	if hits, misses, patched := check("estate heartbeat"); misses != 0 || patched != sightings {
+		t.Fatalf("estate heartbeat: hits=%d misses=%d patched=%d, want 0 misses and %d patches", hits, misses, patched, sightings)
 	}
 }

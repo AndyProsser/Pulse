@@ -1,13 +1,18 @@
 package monitoring
 
 import (
+	"bytes"
 	"encoding/json"
 	"hash/maphash"
 	"math"
 	"reflect"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 
 	"github.com/rcourtman/pulse-go-rewrite/internal/models"
 	"github.com/rcourtman/pulse-go-rewrite/internal/unifiedresources"
@@ -20,10 +25,17 @@ import (
 // broadcasts; an entry is reused only when the resource going into
 // conversion has exactly the same content, so a hit returns what converting
 // it again would. Conversion depends on nothing but that resource.
+//
+// Heartbeat timestamps are the exception: a Kubernetes cluster report moves
+// the sighting and refresh times of every object in the cluster - about a
+// thousand on a homelab k3s - and nothing else. The key leaves those times
+// out; of them only lastSeen reaches the broadcast, so an entry that differs
+// only there has that one value patched into its encoding.
 type broadcastResourceCache struct {
 	mu      sync.Mutex
 	entries map[string]broadcastResourceCacheEntry
 	hits    uint64
+	patched uint64
 	misses  uint64
 }
 
@@ -34,12 +46,23 @@ type broadcastResourceCacheEntry struct {
 	encoded  []byte
 	// entryKey is the id the websocket delta keys encoded by.
 	entryKey string
+	// lastSeen is frontend.LastSeen; around it, encoded splits into
+	// lastSeenPrefix and lastSeenSuffix (both nil when it cannot be located).
+	lastSeen       int64
+	lastSeenPrefix []byte
+	lastSeenSuffix []byte
 }
 
 type broadcastResourceCacheStats struct {
-	hits   uint64
-	misses uint64
+	hits    uint64
+	patched uint64
+	misses  uint64
 }
+
+var broadcastResourceCacheResults = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "pulse_websocket_state_resource_cache_total",
+	Help: "Resources in built broadcast states by cache result: hit (reused), patched (reused with a new lastSeen), miss (converted and encoded).",
+}, []string{"result"})
 
 func newBroadcastResourceCache() *broadcastResourceCache {
 	return &broadcastResourceCache{entries: make(map[string]broadcastResourceCacheEntry)}
@@ -48,7 +71,7 @@ func newBroadcastResourceCache() *broadcastResourceCache {
 func (c *broadcastResourceCache) stats() broadcastResourceCacheStats {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return broadcastResourceCacheStats{hits: c.hits, misses: c.misses}
+	return broadcastResourceCacheStats{hits: c.hits, patched: c.patched, misses: c.misses}
 }
 
 // convertResourcesForBroadcastCached is convertResourcesForBroadcast reusing
@@ -78,22 +101,21 @@ func convertResourcesForBroadcastCached(
 	converted := make([]broadcastResourceCacheEntry, 0, len(allResources))
 	catalogs := newBroadcastResourceCatalogs()
 	encodable := true
-	var hits, misses uint64
+	var hits, patched, misses uint64
 	var hasher resourceContentHasher
 	for _, r := range allResources {
 		key, hashable := hasher.key(&r)
+		lastSeen := monitorLastSeenUnix(r.LastSeen)
 		entry, found := previous[r.ID]
-		if hashable && found && entry.key == key {
+		switch {
+		case hashable && found && entry.key == key && entry.lastSeen == lastSeen:
 			hits++
-		} else {
+		case hashable && found && entry.key == key && entry.lastSeenPrefix != nil:
+			patched++
+			entry = entry.withLastSeen(lastSeen)
+		default:
 			misses++
-			entry = broadcastResourceCacheEntry{key: key, prepared: prepareBroadcastResource(r)}
-			entry.frontend = models.ConvertResourceToFrontend(entry.prepared.input)
-			if encoded, err := json.Marshal(entry.frontend); err == nil {
-				if key, ok := websocket.ResourceEntryKey(encoded); ok {
-					entry.encoded, entry.entryKey = encoded, key
-				}
-			}
+			entry = newBroadcastResourceCacheEntry(key, r)
 			if entry.encoded == nil {
 				encodable = false
 			}
@@ -126,9 +148,62 @@ func convertResourcesForBroadcastCached(
 	cache.mu.Lock()
 	cache.entries = next
 	cache.hits += hits
+	cache.patched += patched
 	cache.misses += misses
 	cache.mu.Unlock()
+	broadcastResourceCacheResults.WithLabelValues("hit").Add(float64(hits))
+	broadcastResourceCacheResults.WithLabelValues("patched").Add(float64(patched))
+	broadcastResourceCacheResults.WithLabelValues("miss").Add(float64(misses))
 	return result, encodings, catalogs.finish()
+}
+
+// lastSeenSentinel stands in for lastSeen when an entry is first encoded so
+// the value's position can be found unambiguously.
+const lastSeenSentinel int64 = math.MinInt64 + 0x5157
+
+var lastSeenSentinelMember = []byte(`"lastSeen":` + strconv.FormatInt(lastSeenSentinel, 10))
+
+// newBroadcastResourceCacheEntry converts and encodes one resource. encoded
+// stays nil when the resource cannot be encoded or keyed for the websocket
+// delta.
+func newBroadcastResourceCacheEntry(key resourceContentKey, r unifiedresources.Resource) broadcastResourceCacheEntry {
+	entry := broadcastResourceCacheEntry{key: key, prepared: prepareBroadcastResource(r)}
+	entry.frontend = models.ConvertResourceToFrontend(entry.prepared.input)
+	entry.lastSeen = entry.frontend.LastSeen
+
+	withSentinel := entry.frontend
+	withSentinel.LastSeen = lastSeenSentinel
+	if encoded, err := json.Marshal(withSentinel); err == nil && bytes.Count(encoded, lastSeenSentinelMember) == 1 {
+		at := bytes.Index(encoded, lastSeenSentinelMember) + len(`"lastSeen":`)
+		entry.lastSeenPrefix = encoded[:at:at]
+		entry.lastSeenSuffix = encoded[at+len(lastSeenSentinelMember)-len(`"lastSeen":`):]
+		entry.encoded = entry.spliceLastSeen(entry.lastSeen)
+	} else if encoded, err := json.Marshal(entry.frontend); err == nil {
+		entry.encoded = encoded
+	}
+	if entry.encoded != nil {
+		key, ok := websocket.ResourceEntryKey(entry.encoded)
+		if !ok {
+			entry.encoded = nil
+		}
+		entry.entryKey = key
+	}
+	return entry
+}
+
+// withLastSeen returns the entry for the same content seen at another time.
+func (e broadcastResourceCacheEntry) withLastSeen(lastSeen int64) broadcastResourceCacheEntry {
+	e.frontend.LastSeen = lastSeen
+	e.lastSeen = lastSeen
+	e.encoded = e.spliceLastSeen(lastSeen)
+	return e
+}
+
+func (e broadcastResourceCacheEntry) spliceLastSeen(lastSeen int64) []byte {
+	out := make([]byte, 0, len(e.lastSeenPrefix)+20+len(e.lastSeenSuffix))
+	out = append(out, e.lastSeenPrefix...)
+	out = strconv.AppendInt(out, lastSeen, 10)
+	return append(out, e.lastSeenSuffix...)
 }
 
 // resourceContentKey identifies a resource's full content: two resources with
@@ -160,6 +235,27 @@ func (h *resourceContentHasher) key(resource *unifiedresources.Resource) (resour
 }
 
 var timeType = reflect.TypeOf(time.Time{})
+
+// resourceContentVolatileFields lists, per struct type, the heartbeat fields
+// the content key leaves out. Only Resource.LastSeen reaches the broadcast,
+// and the cache patches it; the others never do (tests pin both).
+var resourceContentVolatileFields = map[reflect.Type][]bool{
+	reflect.TypeOf(unifiedresources.Resource{}):                   volatileFieldMask(unifiedresources.Resource{}, "LastSeen", "UpdatedAt"),
+	reflect.TypeOf(unifiedresources.ResourceDiscoveryReadiness{}): volatileFieldMask(unifiedresources.ResourceDiscoveryReadiness{}, "GeneratedAt"),
+}
+
+func volatileFieldMask(value any, names ...string) []bool {
+	t := reflect.TypeOf(value)
+	mask := make([]bool, t.NumField())
+	for _, name := range names {
+		field, ok := t.FieldByName(name)
+		if !ok || len(field.Index) != 1 {
+			panic("broadcast resource cache: no field " + t.Name() + "." + name)
+		}
+		mask[field.Index[0]] = true
+	}
+	return mask
+}
 
 // write appends a canonical, self-delimiting serialisation of v. Times in
 // unexported fields fall back to their struct fields, which can only cause
@@ -235,7 +331,11 @@ func (h *resourceContentHasher) write(v reflect.Value, depth int) bool {
 		return h.writeMap(v, depth)
 	case reflect.Struct:
 		h.buf = append(h.buf, '{')
+		volatile := resourceContentVolatileFields[v.Type()]
 		for i := 0; i < v.NumField(); i++ {
+			if volatile != nil && volatile[i] {
+				continue
+			}
 			if !h.write(v.Field(i), depth+1) {
 				return false
 			}
