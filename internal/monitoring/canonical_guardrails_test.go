@@ -606,7 +606,8 @@ func TestBroadcastResourceProjectionCoalescesSplitHostIdentities(t *testing.T) {
 	for _, snippet := range []string{
 		"metricsTargetResolver := broadcastMetricsTargetResolver(unifiedView.readState)",
 		"broadcastResources := unifiedresources.CoalescePresentationHostResources(unifiedView.resources)",
-		"broadcastFrontendResources, broadcastCatalogs := convertResourcesForBroadcast(broadcastResources, metricsTargetResolver)",
+		"broadcastFrontendResources, frontendState.EncodedResources, broadcastCatalogs = convertResourcesForBroadcastCached(cache, broadcastResources, metricsTargetResolver)",
+		"broadcastFrontendResources, broadcastCatalogs = convertResourcesForBroadcast(broadcastResources, metricsTargetResolver)",
 		"frontendState.CapabilityCatalog = broadcastCatalogs.capabilities",
 		"frontendState.PolicyCatalog = broadcastCatalogs.policies",
 		"frontendState.AISafeSummaryCatalog = broadcastCatalogs.aiSafeSummaries",
@@ -616,6 +617,21 @@ func TestBroadcastResourceProjectionCoalescesSplitHostIdentities(t *testing.T) {
 	} {
 		if !strings.Contains(source, snippet) {
 			t.Fatalf("monitor.go must contain %q", snippet)
+		}
+	}
+
+	// The cached conversion must project exactly like the uncached one.
+	cached, err := os.ReadFile("broadcast_resource_cache.go")
+	if err != nil {
+		t.Fatalf("failed to read broadcast_resource_cache.go: %v", err)
+	}
+	for _, snippet := range []string{
+		"allResources = attachBroadcastMetricsTargets(",
+		"allResources = unifiedresources.CoalescePresentationHostResources(allResources)",
+		"prepareBroadcastResource(r)",
+	} {
+		if !strings.Contains(string(cached), snippet) {
+			t.Fatalf("broadcast_resource_cache.go must contain %q", snippet)
 		}
 	}
 }
