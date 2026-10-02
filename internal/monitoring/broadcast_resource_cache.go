@@ -29,7 +29,8 @@ import (
 // Heartbeat timestamps are the exception: a Kubernetes cluster report moves
 // the sighting and refresh times of every object in the cluster - about a
 // thousand on a homelab k3s - and nothing else. The key leaves those times
-// out; of them only lastSeen reaches the broadcast, so an entry that differs
+// (including each source's own sighting) out; of them only lastSeen reaches
+// the broadcast, so an entry that differs
 // only there has that one value patched into its encoding.
 type broadcastResourceCache struct {
 	mu      sync.Mutex
@@ -242,6 +243,9 @@ var timeType = reflect.TypeOf(time.Time{})
 var resourceContentVolatileFields = map[reflect.Type][]bool{
 	reflect.TypeOf(unifiedresources.Resource{}):                   volatileFieldMask(unifiedresources.Resource{}, "LastSeen", "UpdatedAt"),
 	reflect.TypeOf(unifiedresources.ResourceDiscoveryReadiness{}): volatileFieldMask(unifiedresources.ResourceDiscoveryReadiness{}, "GeneratedAt"),
+	// Per-source sightings feed metric sample times, not the broadcast; the
+	// source's status string still counts.
+	reflect.TypeOf(unifiedresources.SourceStatus{}): volatileFieldMask(unifiedresources.SourceStatus{}, "LastSeen"),
 }
 
 func volatileFieldMask(value any, names ...string) []bool {

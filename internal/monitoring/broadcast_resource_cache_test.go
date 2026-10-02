@@ -99,13 +99,22 @@ func TestCachedBroadcastConversionMatchesUncached(t *testing.T) {
 		t.Fatalf("three VMs changed: hits=%d misses=%d patched=%d, want 2 misses and 1 patch", hits, misses, patched)
 	}
 
-	// A heartbeat across the whole estate - every resource's sighting and
-	// refresh timestamps move, as when a Kubernetes cluster reports - is
+	// A heartbeat across the whole estate - every resource's sighting,
+	// per-source sighting and refresh timestamps move, as when a Kubernetes
+	// cluster reports - is
 	// patched everywhere and rebuilds nothing. One resource goes from never
 	// seen to seen.
 	sightings, firstSighting := 0, false
 	for i := range resources {
 		resources[i].UpdatedAt = resources[i].UpdatedAt.Add(time.Minute)
+		if len(resources[i].SourceStatus) > 0 {
+			statuses := make(map[unifiedresources.DataSource]unifiedresources.SourceStatus, len(resources[i].SourceStatus))
+			for source, status := range resources[i].SourceStatus {
+				status.LastSeen = status.LastSeen.Add(time.Minute)
+				statuses[source] = status
+			}
+			resources[i].SourceStatus = statuses
+		}
 		if readiness := resources[i].DiscoveryReadiness; readiness != nil {
 			copied := *readiness
 			copied.GeneratedAt = copied.GeneratedAt.Add(time.Minute)
