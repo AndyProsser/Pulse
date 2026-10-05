@@ -980,6 +980,19 @@ type StateFrontend struct {
 	// ResourceFrontend.AISafeSummaryRef.
 	PolicyCatalog        map[string]json.RawMessage `json:"policyCatalog,omitempty"`
 	AISafeSummaryCatalog map[string]string          `json:"aiSafeSummaryCatalog,omitempty"`
+	// EncodedResources optionally carries, in order, the exact json.Marshal
+	// encoding of each entry in Resources, so the websocket snapshot can reuse
+	// encodings cached across broadcasts instead of re-encoding the whole
+	// estate. It is never serialised, and consumers that change Resources
+	// must drop it.
+	EncodedResources []EncodedResource `json:"-"`
+}
+
+// EncodedResource is the json.Marshal encoding of one ResourceFrontend.
+// Both fields are shared with a cache and must be treated as read-only.
+type EncodedResource struct {
+	ID   string
+	JSON []byte
 }
 
 // EmptyStateFrontend returns a canonical empty frontend state with stable

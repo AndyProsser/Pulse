@@ -105,11 +105,15 @@ func buildClientStateSnapshot(state interface{}) (*clientStateSnapshot, error) {
 }
 
 func buildFrontendStateSnapshot(state models.StateFrontend) (*clientStateSnapshot, error) {
+	if entries, ok := consistentEncodedResources(state); ok {
+		return buildFrontendStateSnapshotFromEncoded(state, entries)
+	}
 	resources := state.Resources
 	// Encode the rest through the existing generic path so future top-level
 	// fields, omitempty, nil/empty arrays and keyed-field fallback stay identical.
 	// This is a local value copy; no source slices/maps are modified or cached.
 	state.Resources = nil
+	state.EncodedResources = nil
 	snapshot, err := buildGenericClientStateSnapshot(state)
 	if err != nil {
 		return nil, err
