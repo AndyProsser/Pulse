@@ -1314,6 +1314,19 @@ type Monitor struct {
 	// canonical store refresh per window; zero refreshes on every report.
 	agentReportRefreshWindow time.Duration
 	agentReportRefresh       agentReportRefreshState
+
+	// broadcastResources caches per-resource broadcast conversions between
+	// state builds; created on first use so zero-value monitors work.
+	broadcastResourcesOnce sync.Once
+	broadcastResources     *broadcastResourceCache
+}
+
+func (m *Monitor) broadcastCache() *broadcastResourceCache {
+	if m == nil {
+		return nil
+	}
+	m.broadcastResourcesOnce.Do(func() { m.broadcastResources = newBroadcastResourceCache() })
+	return m.broadcastResources
 }
 
 func (m *Monitor) setRuntimeContext(ctx context.Context, hub *websocket.Hub) {
@@ -4352,9 +4365,14 @@ func (m *Monitor) buildBroadcastFrontendStateFromSnapshot(snapshot models.StateS
 		health := unifiedresources.EvaluateResourceHealth(broadcastResources[i], healthAlerts, now)
 		broadcastResources[i].Health = &health
 	}
-	broadcastFrontendResources, broadcastCatalogs := convertPresentationResourcesForBroadcast(
-		attachBroadcastMetricsTargets(broadcastResources, metricsTargetResolver),
-	)
+	presentation := attachBroadcastMetricsTargets(broadcastResources, metricsTargetResolver)
+	var broadcastFrontendResources []models.ResourceFrontend
+	var broadcastCatalogs broadcastResourceCatalogs
+	if cache := m.broadcastCache(); cache != nil {
+		broadcastFrontendResources, frontendState.EncodedResources, broadcastCatalogs = convertPresentationResourcesForBroadcastCached(cache, presentation)
+	} else {
+		broadcastFrontendResources, broadcastCatalogs = convertPresentationResourcesForBroadcast(presentation)
+	}
 	frontendState.Resources = broadcastFrontendResources
 	frontendState.CapabilityCatalog = broadcastCatalogs.capabilities
 	frontendState.PolicyCatalog = broadcastCatalogs.policies
@@ -6384,53 +6402,94 @@ func convertPresentationResourcesForBroadcast(allResources []unifiedresources.Re
 
 	result := make([]models.ResourceFrontend, len(allResources))
 	sortKeys := make([]string, len(allResources))
-	catalogs := broadcastResourceCatalogs{
+	catalogs := newBroadcastResourceCatalogs()
+	for i, r := range allResources {
+		prepared := prepareBroadcastResource(r)
+		catalogs.add(prepared)
+		sortKeys[i] = prepared.sortKey
+		result[i] = models.ConvertResourceToFrontend(prepared.input)
+	}
+
+	sort.Sort(broadcastFrontendSort{resources: result, keys: sortKeys})
+	return result, catalogs.finish()
+}
+
+// preparedBroadcastResource is one resource's conversion input with its
+// capability, policy and AI-safe summary blobs moved out to catalog refs.
+type preparedBroadcastResource struct {
+	input           models.ResourceConvertInput
+	sortKey         string
+	capabilityID    string
+	capabilities    json.RawMessage
+	policyID        string
+	policy          json.RawMessage
+	aiSafeSummaryID string
+	aiSafeSummary   string
+}
+
+func prepareBroadcastResource(r unifiedresources.Resource) preparedBroadcastResource {
+	prepared := preparedBroadcastResource{input: monitorResourceToConvertInput(r)}
+	input := &prepared.input
+	if len(input.Capabilities) > 0 {
+		prepared.capabilityID = capabilityCatalogID(input.Capabilities)
+		prepared.capabilities = input.Capabilities
+		input.CapabilitiesRef = prepared.capabilityID
+		input.Capabilities = nil
+	}
+	// Non-default policies and AI-safe summaries dedupe the same way:
+	// estates carry a handful of distinct postures and templated summary
+	// strings, so refs replace per-resource inline duplication.
+	if len(input.Policy) > 0 {
+		prepared.policyID = capabilityCatalogID(input.Policy)
+		prepared.policy = input.Policy
+		input.PolicyRef = prepared.policyID
+		input.Policy = nil
+	}
+	if input.AISafeSummary != "" {
+		prepared.aiSafeSummaryID = capabilityCatalogID(json.RawMessage(input.AISafeSummary))
+		prepared.aiSafeSummary = input.AISafeSummary
+		input.AISafeSummaryRef = prepared.aiSafeSummaryID
+		input.AISafeSummary = ""
+	}
+	prepared.sortKey = strings.ToLower(input.DisplayName)
+	if prepared.sortKey == "" {
+		prepared.sortKey = strings.ToLower(input.Name)
+	}
+	return prepared
+}
+
+func newBroadcastResourceCatalogs() broadcastResourceCatalogs {
+	return broadcastResourceCatalogs{
 		capabilities:    make(map[string]json.RawMessage),
 		policies:        make(map[string]json.RawMessage),
 		aiSafeSummaries: make(map[string]string),
 	}
-	for i, r := range allResources {
-		input := monitorResourceToConvertInput(r)
-		if len(input.Capabilities) > 0 {
-			id := capabilityCatalogID(input.Capabilities)
-			catalogs.capabilities[id] = input.Capabilities
-			input.CapabilitiesRef = id
-			input.Capabilities = nil
-		}
-		// Non-default policies and AI-safe summaries dedupe the same way:
-		// estates carry a handful of distinct postures and templated summary
-		// strings, so refs replace per-resource inline duplication.
-		if len(input.Policy) > 0 {
-			id := capabilityCatalogID(input.Policy)
-			catalogs.policies[id] = input.Policy
-			input.PolicyRef = id
-			input.Policy = nil
-		}
-		if input.AISafeSummary != "" {
-			id := capabilityCatalogID(json.RawMessage(input.AISafeSummary))
-			catalogs.aiSafeSummaries[id] = input.AISafeSummary
-			input.AISafeSummaryRef = id
-			input.AISafeSummary = ""
-		}
-		sortKey := strings.ToLower(input.DisplayName)
-		if sortKey == "" {
-			sortKey = strings.ToLower(input.Name)
-		}
-		sortKeys[i] = sortKey
-		result[i] = models.ConvertResourceToFrontend(input)
-	}
+}
 
-	sort.Sort(broadcastFrontendSort{resources: result, keys: sortKeys})
-	if len(catalogs.capabilities) == 0 {
-		catalogs.capabilities = nil
+func (c *broadcastResourceCatalogs) add(prepared preparedBroadcastResource) {
+	if prepared.capabilityID != "" {
+		c.capabilities[prepared.capabilityID] = prepared.capabilities
 	}
-	if len(catalogs.policies) == 0 {
-		catalogs.policies = nil
+	if prepared.policyID != "" {
+		c.policies[prepared.policyID] = prepared.policy
 	}
-	if len(catalogs.aiSafeSummaries) == 0 {
-		catalogs.aiSafeSummaries = nil
+	if prepared.aiSafeSummaryID != "" {
+		c.aiSafeSummaries[prepared.aiSafeSummaryID] = prepared.aiSafeSummary
 	}
-	return result, catalogs
+}
+
+// finish drops empty catalogs so they are omitted from the payload.
+func (c broadcastResourceCatalogs) finish() broadcastResourceCatalogs {
+	if len(c.capabilities) == 0 {
+		c.capabilities = nil
+	}
+	if len(c.policies) == 0 {
+		c.policies = nil
+	}
+	if len(c.aiSafeSummaries) == 0 {
+		c.aiSafeSummaries = nil
+	}
+	return c
 }
 
 // Keep each precomputed sort key beside its row while sorting in place.
